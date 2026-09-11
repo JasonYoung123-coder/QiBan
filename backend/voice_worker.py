@@ -15,11 +15,14 @@ from livekit.plugins import openai, silero
 from sqlalchemy import select
 
 from .config import ROOT, Settings
+from .connection_settings import ConnectionStore
 from .database import Message, Profile, make_database
 from .providers import compile_persona
 from .voice_tts import VolcengineTTS
+from .voice_llm import CompanionLLM
 
-cfg = Settings()
+base_cfg = Settings()
+cfg = ConnectionStore(base_cfg, ROOT / ".data/connections.json").apply(base_cfg)
 server = agents.AgentServer(ws_url=cfg.livekit_url or None, api_key=cfg.livekit_api_key or None,
                             api_secret=cfg.livekit_api_secret or None, log_level="INFO")
 
@@ -34,6 +37,7 @@ class CompanionVoiceAgent(Agent):
 
 @server.rtc_session()
 async def entrypoint(ctx: JobContext):
+    cfg = ConnectionStore(base_cfg, ROOT / ".data/connections.json").apply(base_cfg)
     if not cfg.realtime_ready:
         raise RuntimeError("Complete LiveKit, chat, STT, TTS and WORKER_SECRET configuration first.")
     room_name = ctx.room.name
@@ -68,7 +72,7 @@ async def entrypoint(ctx: JobContext):
         stt=openai.STT(base_url=cfg.stt_base_url, api_key=cfg.stt_api_key or "local-not-required",
                        model=cfg.stt_model, language="zh" if profile.language == "zh-CN" else "en",
                        detect_language=profile.language == "auto", use_realtime=False),
-        llm=openai.LLM(base_url=cfg.chat_base_url, api_key=cfg.chat_api_key or "local-not-required", model=cfg.chat_model),
+        llm=CompanionLLM(cfg),
         tts=VolcengineTTS(cfg) if cfg.tts_provider == "volcengine" else openai.TTS(
             base_url=cfg.tts_base_url, api_key=cfg.tts_api_key or "local-not-required",
             model=cfg.tts_model, voice=cfg.tts_voice, response_format="wav"),

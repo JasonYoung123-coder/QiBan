@@ -18,4 +18,4 @@ npm.cmd run assets
 if ($LASTEXITCODE -ne 0) { throw 'Asset setup failed.' }
 npm.cmd run build
 if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
-Write-Output 'Setup complete. Fill CHAT_API_KEY in .env, then run the desktop launcher.'
+Write-Output 'Setup complete. Run the desktop launcher and configure your model in Settings.'

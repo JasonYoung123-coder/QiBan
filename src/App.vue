@@ -4,6 +4,7 @@ import { ArrowUp, AudioLines, BookHeart, Check, ChevronRight, Heart, Leaf, Loade
   Mic, Minus, Monitor, Plus, Settings2, Sparkles, Square, Trash2, Upload, UserRound, Volume2, VolumeX, X } from 'lucide-vue-next'
 import { Room, RoomEvent, Track } from 'livekit-client'
 import Live2DStage from './components/Live2DStage.vue'
+import ConnectionSettings from './components/ConnectionSettings.vue'
 import { api, consumeEvents } from './lib/api'
 import { SpeechPlayer } from './lib/audio'
 import { TurnGate } from './lib/turn-gate'
@@ -384,6 +385,11 @@ async function togglePet(): Promise<void> {
   petMode.value = await desktop.setPetMode(!petMode.value)
 }
 
+async function prepareSettingsSave(): Promise<void> {
+  stopRecording(false)
+  await stop()
+}
+
 async function changeLanguage(event: Event): Promise<void> {
   const language = (event.target as HTMLSelectElement).value as Language
   await stop()
@@ -464,7 +470,7 @@ onBeforeUnmount(() => {
 
       <template v-if="tab === 'chat'">
         <div class="connection-strip" :class="{ connected: capabilities.chat === 'connected' }">
-          <span class="connection-dot" />{{ capabilities.chat === 'connected' ? '聊天模型已配置' : '本地示范模式 · 填写密钥后接入你的模型' }}
+          <span class="connection-dot" />{{ capabilities.chat === 'connected' ? '聊天模型已配置' : '示范模式 · 在设置中连接你的模型' }}
           <button aria-label="查看连接设置" @click="tab = 'settings'"><ChevronRight :size="15" /></button>
         </div>
         <div ref="chatScroll" class="chat-history" aria-live="polite" aria-relevant="additions text">
@@ -523,6 +529,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-else class="settings-body">
+        <ConnectionSettings v-if="ready" :before-save="prepareSettingsSave" @saved="value => { capabilities = value }" />
         <h2 class="setting-title">陪伴方式</h2>
         <div class="setting-row"><div><strong>回复朗读</strong><small>{{ voiceLabel }} · 中英声音取决于语音包或服务</small></div><button class="switch" :class="{ on: readAloud }" role="switch" :aria-checked="readAloud" aria-label="回复朗读开关" @click="toggleReadAloud"><span /></button></div>
         <div class="setting-row"><div><strong>低动态模式</strong><small>减少身体动作，保留基本口型</small></div><button class="switch" :class="{ on: lowMotion }" role="switch" :aria-checked="lowMotion" aria-label="低动态模式开关" @click="toggleLowMotion"><span /></button></div>
@@ -534,10 +541,9 @@ onBeforeUnmount(() => {
         <h2 class="setting-title">连接状态</h2>
         <div class="service-status"><span>聊天模型</span><strong :class="{ available: capabilities.chat === 'connected' }">{{ capabilities.chat === 'connected' ? capabilities.model : '等待填写 API Key' }}</strong></div>
         <div class="service-status"><span>语音识别 / 合成</span><strong>{{ capabilities.stt ? '识别已配置' : '识别待接入' }} · {{ voiceLabel }}</strong></div>
-        <p v-if="capabilities.tts_pending" class="field-help">火山引擎音色待启用：在 .env 填写 VOLCENGINE_TTS_API_KEY 后重启。当前使用系统声音。</p>
+        <p v-if="capabilities.tts_pending" class="field-help">火山引擎音色待启用，请在上方语音设置中填写密钥并保存。当前使用系统声音。</p>
         <div class="service-status"><span>实时通话</span><strong>{{ capabilities.realtime ? '已配置，需语音进程在线' : '待接入 LiveKit 与语音服务' }}</strong></div>
-        <div class="setup-note"><p>接入你选择的聊天服务。</p><code>CHAT_BASE_URL · CHAT_MODEL · CHAT_API_KEY</code><small>在项目 .env 中填写服务地址、模型和密钥，再重启本地服务。密钥仅由后端读取，不进入界面或角色提示词。</small><button class="text-button" @click="load">重新检查配置 <ChevronRight :size="14" /></button></div>
-        <p class="build-note">栖伴 0.1 · 本地原型<br>Live2D 呈现参考 AIRI。Windows 本地朗读与远程音频使用声音包络驱动口型；浏览器系统朗读使用基础开合动画。</p>
+        <p class="build-note">栖伴 0.2 · 本地陪伴<br>Windows 本地朗读与远程音频使用声音包络驱动口型；浏览器系统朗读使用基础开合动画。</p>
       </div>
     </section>
     <div v-if="toast" class="toast" role="status"><Leaf :size="17" />{{ toast }}</div>

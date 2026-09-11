@@ -6,6 +6,7 @@ node_modules/
 !.env.example
 dist/
 release/
+runtime/
 .pytest_cache/
 .ruff_cache/
 __pycache__/

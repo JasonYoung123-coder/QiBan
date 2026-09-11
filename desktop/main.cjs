@@ -1,10 +1,12 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, globalShortcut, dialog } = require('electron')
 const { spawn } = require('node:child_process')
-const { existsSync, mkdirSync, openSync, closeSync } = require('node:fs')
+const { existsSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync, renameSync } = require('node:fs')
+const { createHash } = require('node:crypto')
 const path = require('node:path')
 
 const root = path.resolve(__dirname, '..')
 const serverUrl = 'http://127.0.0.1:18765'
+const instance = createHash('sha256').update(root.replaceAll('\\', '/').toLowerCase()).digest('hex').slice(0, 16)
 let mainWindow
 let backend
 let tray
@@ -27,22 +29,25 @@ async function health() {
   try {
     const result = await fetch(`${serverUrl}/api/health`, { signal: AbortSignal.timeout(1200) })
     const data = await result.json()
-    if (data.service !== 'qiban-companion-core') throw new Error('端口 18765 已被其他程序使用。')
+    if (data.service !== 'qiban-companion-core' || data.instance !== instance) throw new Error('端口 18765 已被其他程序或另一份栖伴使用，请先退出它。')
     return true
   } catch (error) {
-    if (error.message === '端口 18765 已被其他程序使用。') throw error
+    if (error.message.startsWith('端口 18765')) throw error
     return false
   }
 }
 
 async function ensureBackend() {
   if (await health()) return
-  const python = path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
-  if (!existsSync(python)) throw new Error('Python 环境尚未准备。请先运行 scripts/setup.ps1。')
+  const bundledPython = path.join(root, 'runtime', 'python', 'python.exe')
+  const python = existsSync(bundledPython) ? bundledPython : path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+  if (!existsSync(python)) throw new Error('运行文件不完整，请复制完整便携版文件夹。源码版请先运行 scripts/setup.ps1。')
   mkdirSync(path.join(root, '.data'), { recursive: true })
   const log = openSync(path.join(root, '.data', 'backend.log'), 'a')
+  const pythonEnv = { ...process.env, PYTHONUTF8: '1', PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }
+  delete pythonEnv.PYTHONHOME; delete pythonEnv.PYTHONPATH; delete pythonEnv.VIRTUAL_ENV
   backend = spawn(python, ['-m', 'uvicorn', 'backend.api:create_app', '--factory', '--host', '127.0.0.1', '--port', '18765'], {
-    cwd: root, windowsHide: true, stdio: ['ignore', log, log], env: { ...process.env, PYTHONUTF8: '1' },
+    cwd: root, windowsHide: true, stdio: ['ignore', log, log], env: pythonEnv,
   })
   closeSync(log)
   let spawnError
@@ -54,6 +59,29 @@ async function ensureBackend() {
     await new Promise(resolve => setTimeout(resolve, 250))
   }
   throw new Error('本地服务启动超时，请查看 .data/backend.log。')
+}
+
+async function restorePortableSession(session) {
+  // Chromium encrypts cookies using the Windows account. Keep this local session portable as well.
+  const file = path.join(root, '.data', 'desktop-session.json')
+  mkdirSync(path.dirname(file), { recursive: true })
+  const save = value => {
+    const temporary = `${file}.tmp`
+    writeFileSync(temporary, JSON.stringify({ token: value }), { mode: 0o600 })
+    renameSync(temporary, file)
+  }
+  if (existsSync(file)) {
+    const { token } = JSON.parse(readFileSync(file, 'utf8'))
+    if (typeof token !== 'string' || !token || token.length > 200) throw new Error('本地会话文件损坏，请恢复 .data 备份。')
+    await session.cookies.set({ url: serverUrl, name: 'qiban_session', value: token,
+      httpOnly: true, sameSite: 'strict', expirationDate: Date.now() / 1000 + 365 * 86400 })
+  } else {
+    const existing = await session.cookies.get({ url: serverUrl, name: 'qiban_session' })
+    if (existing[0]) save(existing[0].value)
+  }
+  session.cookies.on('changed', (_event, cookie, _cause, removed) => {
+    if (!removed && cookie.name === 'qiban_session' && cookie.domain === '127.0.0.1') save(cookie.value)
+  })
 }
 
 function togglePet(enabled) {
@@ -142,6 +170,7 @@ async function start() {
   globalShortcut.register('CommandOrControl+Alt+Q', () => { setClickThrough(false); mainWindow.show(); mainWindow.focus() })
   mainWindow.once('ready-to-show', () => { if (process.env.QIBAN_TEST_HIDDEN !== '1') mainWindow.show() })
   mainWindow.on('closed', () => { mainWindow = undefined; app.quit() })
+  await restorePortableSession(mainWindow.webContents.session)
   await mainWindow.loadURL(serverUrl)
 }
 

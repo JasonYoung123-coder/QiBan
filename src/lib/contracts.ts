@@ -9,7 +9,7 @@ export interface Profile {
   persona: string
   language: Language
 }
-export interface Capabilities { chat: 'demo' | 'connected'; stt: boolean; tts: boolean; tts_provider?: 'windows' | 'remote' | 'browser' | 'volcengine'; tts_pending?: boolean; realtime: boolean; model: string }
+export interface Capabilities { chat: 'demo' | 'connected'; chat_provider?: 'openai' | 'responses' | 'anthropic'; stt: boolean; tts: boolean; tts_provider?: 'windows' | 'remote' | 'browser' | 'volcengine'; tts_pending?: boolean; realtime: boolean; model: string }
 export interface Message { id: string; role: 'user' | 'assistant'; text: string; generation_id: string; delivery_state: string }
 export interface Memory { id: string; text: string; revision: number; created_at?: string }
 export interface Bootstrap { profile: Profile; conversation_id: string; capabilities: Capabilities }

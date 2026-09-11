@@ -11,10 +11,12 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy import select
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import ROOT, Settings
+from .connection_settings import ConnectionStore, ConnectionsUpdate, SettingsConflict
 from .database import Conversation, Memory, Message, Profile, make_database, new_session_token, token_hash
 from .providers import ChatProvider, compile_persona, language_for, synthesize, transcribe
 from .schemas import DeliveryRequest, MemoryRequest, ProfileUpdate, ProfileView, SpeechRequest, TurnRequest
@@ -40,8 +42,11 @@ class Generation:
                                "sequence": self.sequence, "payload": payload})
 
 
-def create_app(settings: Settings | None = None, provider: ChatProvider | None = None) -> FastAPI:
-    cfg = settings or Settings()
+def create_app(settings: Settings | None = None, provider: ChatProvider | None = None,
+               settings_store: ConnectionStore | None = None) -> FastAPI:
+    base_cfg = settings or Settings()
+    store = settings_store or ConnectionStore(base_cfg, None if settings else ROOT / ".data/connections.json")
+    cfg = store.apply(base_cfg)
     (ROOT / ".data").mkdir(exist_ok=True)
     engine, sessions = make_database(cfg.database_url)
     chat = provider or ChatProvider(cfg)
@@ -66,11 +71,17 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
         await asyncio.gather(*tasks, return_exceptions=True)
         engine.dispose()
 
-    app = FastAPI(title="Qiban Companion Core", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Qiban Companion Core", version="0.2.0", lifespan=lifespan)
     app.state.sessions = sessions
     app.state.settings = cfg
     app.state.generations = active
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_request, exc):
+        # Pydantic's default response echoes invalid input, which may contain an API key.
+        return JSONResponse({"detail": [{"loc": error["loc"], "msg": error["msg"], "type": error["type"]}
+                                        for error in exc.errors()]}, status_code=422)
 
     @app.middleware("http")
     async def local_boundary(request: Request, call_next):
@@ -113,7 +124,71 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
 
     @app.get("/api/health")
     async def health():
-        return {"ok": True, "version": "0.1.0", "service": "qiban-companion-core"}
+        import hashlib
+        return {"ok": True, "version": "0.2.0", "service": "qiban-companion-core",
+                "instance": hashlib.sha256(ROOT.as_posix().lower().encode()).hexdigest()[:16]}
+
+    def capabilities():
+        return {"chat": "connected" if cfg.chat_ready else "demo", "chat_provider": cfg.chat_provider,
+                "stt": cfg.stt_ready, "tts": cfg.tts_ready or local_tts,
+                "tts_provider": ("volcengine" if cfg.tts_provider == "volcengine" else "remote")
+                if cfg.tts_ready else "windows" if local_tts else "browser",
+                "tts_pending": cfg.tts_provider == "volcengine" and not cfg.tts_ready,
+                "realtime": cfg.realtime_ready, "model": cfg.chat_model if cfg.chat_ready else ""}
+
+    @app.get("/api/settings")
+    async def connection_settings(request: Request):
+        actor(request)
+        return {"settings": store.public(), "capabilities": capabilities()}
+
+    @app.put("/api/settings")
+    async def save_connections(body: ConnectionsUpdate, request: Request):
+        nonlocal cfg, chat, local_tts
+        actor(request)
+        try:
+            store.save(body)
+        except SettingsConflict as error:
+            raise HTTPException(409, str(error)) from None
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
+        except OSError:
+            raise HTTPException(500, "无法保存设置，请把应用放在可写的文件夹中。") from None
+        for owner in {g.owner for g in active.values()} | {lease["owner"] for lease in voice_leases.values()}:
+            cancel_owner(owner)
+        cfg = store.apply(base_cfg)
+        app.state.settings = cfg
+        chat = ChatProvider(cfg)
+        local_tts = cfg.windows_tts_enabled and windows_speech_available()
+        return {"settings": store.public(), "capabilities": capabilities()}
+
+    @app.post("/api/settings/test")
+    async def test_connection(body: ConnectionsUpdate, request: Request):
+        actor(request)
+        try:
+            candidate = store.preview(body, base_cfg)
+            if not candidate.chat_ready:
+                raise HTTPException(422, "请填写服务地址、模型名称和 API Key。")
+            candidate.chat_timeout_seconds = min(candidate.chat_timeout_seconds, 20)
+            preview = ChatProvider(candidate)
+            async def check():
+                answer = ""
+                async for part in preview.stream([{"role": "user", "content": "Reply with OK."}],
+                                                  name="connection-test", language="en-US", memories=[]):
+                    answer += part
+                    if len(answer) > 1000:
+                        return True
+                return bool(answer.strip())
+            if not await asyncio.wait_for(check(), timeout=25):
+                raise ValueError("Empty response")
+        except SettingsConflict as error:
+            raise HTTPException(409, str(error)) from None
+        except httpx.HTTPStatusError as error:
+            status = error.response.status_code
+            hint = "请检查密钥和账号权限。" if status in (401, 403) else "请检查服务地址、模型名称、配额或接口类型。"
+            raise HTTPException(502, f"服务返回 HTTP {status}，{hint}") from None
+        except (httpx.HTTPError, ValueError, TimeoutError):
+            raise HTTPException(502, "连接测试未通过，请检查接口类型、地址、模型或网络。") from None
+        return {"ok": True, "message": "连接成功，模型已返回文字。"}
 
     @app.post("/api/bootstrap")
     async def bootstrap(request: Request, response: Response):
@@ -134,13 +209,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
                 db.add(conversation)
                 db.commit()
         return {"profile": profile_view(profile), "conversation_id": conversation.id,
-                "capabilities": {"chat": "connected" if cfg.chat_ready else "demo",
-                                 "stt": cfg.stt_ready, "tts": cfg.tts_ready or local_tts,
-                                 "tts_provider": ("volcengine" if cfg.tts_provider == "volcengine" else "remote")
-                                 if cfg.tts_ready else "windows" if local_tts else "browser",
-                                 "tts_pending": cfg.tts_provider == "volcengine" and not cfg.tts_ready,
-                                 "realtime": cfg.realtime_ready,
-                                 "model": cfg.chat_model if cfg.chat_ready else ""}}
+                "capabilities": capabilities()}
 
     @app.put("/api/profile")
     async def update_profile(body: ProfileUpdate, request: Request):
@@ -173,12 +242,12 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
                               .order_by(Message.created_at)).all()
             return [message_view(row) for row in rows if row.delivered_text]
 
-    async def produce(g: Generation, prompt: list[dict[str, str]], profile, language, memories):
+    async def produce(g: Generation, prompt: list[dict[str, str]], profile, language, memories, reply_provider):
         state = "generated"
         try:
             g.emit("assistant.started", {"message_id": g.message, "language": language,
                                           "mode": "connected" if cfg.chat_ready else "demo"})
-            async for delta in chat.stream(prompt, name=profile.name, language=language, memories=memories):
+            async for delta in reply_provider.stream(prompt, name=profile.name, language=language, memories=memories):
                 if len(g.text) + len(delta) > 16000:
                     raise ValueError("Reply exceeded length limit")
                 g.text += delta
@@ -245,7 +314,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
             db.commit()
             g = Generation(profile.id, conversation_id, assistant.id, generation_id, profile.revision)
             active[conversation_id] = g
-        g.task = asyncio.create_task(produce(g, prompt, profile, language, memories))
+        g.task = asyncio.create_task(produce(g, prompt, profile, language, memories, chat))
 
         async def stream():
             try:

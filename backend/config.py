@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     database_url: str = f"sqlite:///{(ROOT / '.data' / 'companion.db').as_posix()}"
     chat_base_url: str = ""
+    chat_provider: Literal["openai", "responses", "anthropic"] = "openai"
     chat_model: str = ""
     chat_api_key: str = ""
     chat_timeout_seconds: float = 60
@@ -24,7 +25,7 @@ class Settings(BaseSettings):
     tts_model: str = ""
     tts_voice: str = "alloy"
     tts_api_key: str = ""
-    tts_provider: Literal["openai", "volcengine"] = "openai"
+    tts_provider: Literal["openai", "volcengine", "system"] = "openai"
     volcengine_tts_url: str = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
     volcengine_tts_api_key: str = ""
     volcengine_tts_resource_id: str = "seed-tts-2.0"
@@ -48,6 +49,8 @@ class Settings(BaseSettings):
 
     @property
     def tts_ready(self) -> bool:
+        if self.tts_provider == "system":
+            return False
         if self.tts_provider == "volcengine":
             return bool(self.volcengine_tts_api_key.strip() and self.volcengine_tts_url
                         and self.volcengine_tts_resource_id and self.volcengine_tts_speaker)

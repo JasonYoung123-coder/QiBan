@@ -36,12 +36,24 @@
 
 ## 快速开始
 
-### 1. 准备环境
+### 便携版：复制即可启动
 
-- Windows 10 / 11
-- Node.js 22.12+ 或 24 LTS
-- uv（用于准备 Python 3.12 / 3.13 和项目依赖）
-- Git
+使用完整的 `QiBan-Windows-x64` 文件夹，在 Windows 10 / 11 x64 上双击 **`启动桌面.cmd`**。程序自带运行环境和角色素材，无需安装 Node.js、Python 或开发工具。
+
+首次启动后打开「设置」：
+
+1. 选择 **OpenAI / 兼容接口**、**OpenAI Responses** 或 **Anthropic Messages**。
+2. 填入服务地址、模型名称和 API Key；官方接口可点击「填入官方地址」。
+3. 点击「测试聊天连接」，确认后「保存连接设置」。下一次聊天立即生效。
+4. 如需指定声音，在同一页面选择火山引擎，填写语音 API Key。默认音色为 `zh_female_sajiaoxuemei_uranus_bigtts`。
+
+三种聊天接口分别保存配置，切换不会丢失；已保存密钥不会回显，留空保留，勾选清除才会删除。未配置模型时，可通过明确标识的示范模式体验界面、角色和记忆操作。
+
+完全退出程序后复制整个文件夹，可以携带连接设置、人设和聊天记录到新电脑。详细说明见 [便携版与迁移](docs/PORTABLE.md)。云端服务仍需网络和有效账号；本地朗读使用电脑已安装的语音包。
+
+### 从源码运行
+
+开发环境需 Windows 10 / 11、Node.js 22.12+ 或 24 LTS、Git 和 uv。
 
 ```powershell
 git clone https://github.com/JasonYoung123-coder/QiBan.git
@@ -49,42 +61,9 @@ cd QiBan
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 ```
 
-安装脚本会准备依赖、角色运行素材和界面，并创建 `.env`。已有 `.env` 会保留。首次安装需要联网。
+安装完成后双击 `启动桌面.cmd`，在设置页填写连接即可。源码仓库不含大型运行文件，源码下载后需完成首次安装；制作完整便携包见 [打包说明](docs/PORTABLE.md)。
 
-### 2. 配置聊天模型
-
-在 `.env` 中填写兼容聊天接口的服务地址、模型名称和密钥：
-
-```dotenv
-CHAT_BASE_URL=https://你的聊天服务/v1
-CHAT_MODEL=你的模型名称
-CHAT_API_KEY=你的密钥
-```
-
-服务需支持 `POST /chat/completions` 和流式回复。密钥仅由本地后端读取。
-
-未配置模型时，可以使用明确标识的示范模式体验角色、界面和记忆操作；自由对话需要接入真实模型。
-
-### 3. 启动栖伴
-
-双击根目录的 **`启动桌面.cmd`**。
-
-在「人设」中调整伙伴性格，输入第一句话即可开始。点击角色下方的「安静陪伴」可开启回复朗读。
-
-### 4. 启用火山引擎音色（可选）
-
-接口和音色已预填，只需设置：
-
-```dotenv
-TTS_PROVIDER=volcengine
-VOLCENGINE_TTS_API_KEY=你的X-Api-Key
-VOLCENGINE_TTS_RESOURCE_ID=seed-tts-2.0
-VOLCENGINE_TTS_SPEAKER=zh_female_sajiaoxuemei_uranus_bigtts
-```
-
-完全退出并重启栖伴，开启「回复朗读」。语音密钥为空时继续使用系统声音；配置后，设置页会显示「火山引擎语音」。
-
-更多音频配置见 [语音接入说明](docs/VOICE.md)。
+更多音频设置见 [语音接入说明](docs/VOICE.md)。
 
 ## 日常操作
 
@@ -101,7 +80,7 @@ VOLCENGINE_TTS_SPEAKER=zh_female_sajiaoxuemei_uranus_bigtts
 
 ## 本地数据
 
-人设、记忆和聊天记录保存在 `.data/companion.db`；桌面会话信息保存在 `.data/desktop-profile`。备份前请退出程序，再一并备份这两处。密钥保存在 `.env`，不应提交到仓库。
+人设、记忆和聊天记录保存在 `.data/companion.db`，连接配置及明文密钥保存在 `.data/connections.json`，本地身份保存在 `.data/desktop-session.json`。完全退出后备份整个 `.data` 文件夹。已配置的文件夹含个人密钥和记录，请只迁移到自己的设备。
 
 接入云端模型或语音服务时，完成请求所需的文本或音频会发送至你配置的服务。
 
@@ -130,7 +109,7 @@ npm run check
 .venv\Scripts\python.exe -m ruff check backend tests
 ```
 
-修改配置后重启本地服务；修改界面后运行 `npm run build` 再启动桌面程序。
+设置页保存的聊天与朗读配置即时生效；实时语音进程的连接参数修改后需重启该进程。修改界面后运行 `npm run build` 再启动桌面程序。
 
 | 目录 | 内容 |
 |---|---|
@@ -142,7 +121,7 @@ npm run check
 
 ## 常见问题
 
-**为什么还是示范模式？**  检查 `.env` 的聊天地址、模型和密钥，保存后重启。
+**为什么还是示范模式？**  打开「设置」检查聊天地址、模型和密钥，使用连接测试并保存。
 
 **为什么没有声音？**  开启「回复朗读」，并检查系统语音包或语音服务配置。
 

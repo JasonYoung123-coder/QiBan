@@ -54,6 +54,36 @@ class ChatProvider:
         self.settings = settings
         self.transport = transport
 
+    def request(self, messages):
+        cfg = self.settings
+        base = cfg.chat_base_url.rstrip("/")
+        for suffix in ("/chat/completions", "/responses", "/messages"):
+            if base.endswith(suffix):
+                base = base[:-len(suffix)]
+        system = "\n".join(row["content"] for row in messages if row["role"] in ("system", "developer"))
+        turns = [row for row in messages if row["role"] in ("user", "assistant")]
+        if cfg.chat_provider == "anthropic":
+            headers = {"anthropic-version": "2023-06-01"}
+            if cfg.chat_api_key:
+                headers["x-api-key"] = cfg.chat_api_key
+            body = {"model": cfg.chat_model, "messages": turns, "max_tokens": cfg.chat_max_tokens or 4096,
+                    "stream": True}
+            if system:
+                body["system"] = system
+            return f"{base}/messages", headers, body
+        headers = {"Authorization": f"Bearer {cfg.chat_api_key}"} if cfg.chat_api_key else {}
+        if cfg.chat_provider == "responses":
+            body = {"model": cfg.chat_model, "input": turns, "stream": True, "store": False}
+            if system:
+                body["instructions"] = system
+            if cfg.chat_max_tokens:
+                body["max_output_tokens"] = cfg.chat_max_tokens
+            return f"{base}/responses", headers, body
+        body = {"model": cfg.chat_model, "messages": messages, "stream": True}
+        if cfg.chat_max_tokens:
+            body["max_completion_tokens"] = cfg.chat_max_tokens
+        return f"{base}/chat/completions", headers, body
+
     async def stream(self, messages: list[dict[str, str]], *, name: str,
                      language: str, memories: list[str]) -> AsyncIterator[str]:
         cfg = self.settings
@@ -63,31 +93,38 @@ class ChatProvider:
                 await asyncio.sleep(cfg.demo_chunk_delay)
                 yield reply[index:index + 3]
             return
-        headers = {"Authorization": f"Bearer {cfg.chat_api_key}"} if cfg.chat_api_key else {}
-        body = {"model": cfg.chat_model, "messages": messages, "stream": True}
-        # The user-provided gateway contract does not require temperature or token-budget parameters.
-        # Keep the baseline minimal; reasoning model gateways can reject legacy max_tokens/temperature.
-        if cfg.chat_max_tokens > 0:
-            body["max_completion_tokens"] = cfg.chat_max_tokens
+        url, headers, body = self.request(messages)
         async with httpx.AsyncClient(timeout=cfg.chat_timeout_seconds, transport=self.transport) as client:
             async with client.stream(
-                "POST", f"{cfg.chat_base_url.rstrip('/')}/chat/completions", headers=headers,
+                "POST", url, headers=headers,
                 json=body,
             ) as response:
                 response.raise_for_status()
                 completed = False
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
+                async for data in sse_data(response):
                     if data == "[DONE]":
-                        completed = True
+                        if cfg.chat_provider == "openai":
+                            completed = True
                         break
                     if not data:
                         continue
                     payload = json.loads(data)
-                    if payload.get("error"):
+                    kind = payload.get("type", "")
+                    if payload.get("error") or kind in ("error", "response.failed", "response.incomplete"):
                         raise ValueError("Provider returned an error event")
+                    if cfg.chat_provider == "responses":
+                        if kind in ("response.output_text.delta", "response.refusal.delta"):
+                            if isinstance(payload.get("delta"), str):
+                                yield payload["delta"]
+                        elif kind == "response.completed":
+                            completed = True
+                        continue
+                    if cfg.chat_provider == "anthropic":
+                        if kind == "content_block_delta" and payload.get("delta", {}).get("type") == "text_delta":
+                            yield payload["delta"]["text"]
+                        elif kind == "message_stop":
+                            completed = True
+                        continue
                     for choice in payload.get("choices", [])[:1]:
                         if choice.get("finish_reason") is not None:
                             completed = True
@@ -96,6 +133,25 @@ class ChatProvider:
                             yield content
                 if not completed:
                     raise ValueError("Provider stream ended without completion")
+
+
+async def sse_data(response: httpx.Response):
+    lines = []
+    size = 0
+    async for line in response.aiter_lines():
+        if not line:
+            if lines:
+                yield "\n".join(lines)
+                lines = []
+                size = 0
+        elif line.startswith("data:"):
+            value = line[5:].lstrip(" ")
+            size += len(value)
+            if size > 1_000_000:
+                raise ValueError("Provider event too large")
+            lines.append(value)
+    if lines:
+        yield "\n".join(lines)
 
 
 async def synthesize(settings: Settings, text: str) -> tuple[bytes, str]:
