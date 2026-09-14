@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, Response, Uploa
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import ROOT, Settings
@@ -71,7 +71,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
         await asyncio.gather(*tasks, return_exceptions=True)
         engine.dispose()
 
-    app = FastAPI(title="Qiban Companion Core", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="Qiban Companion Core", version="0.3.1", lifespan=lifespan)
     app.state.sessions = sessions
     app.state.settings = cfg
     app.state.generations = active
@@ -125,7 +125,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
     @app.get("/api/health")
     async def health():
         import hashlib
-        return {"ok": True, "version": "0.3.0", "service": "qiban-companion-core",
+        return {"ok": True, "version": "0.3.1", "service": "qiban-companion-core",
                 "instance": hashlib.sha256(ROOT.as_posix().lower().encode()).hexdigest()[:16]}
 
     def capabilities():
@@ -223,6 +223,23 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
             db.commit()
             return profile_view(profile)
 
+    @app.get("/api/conversations")
+    async def conversation_list(request: Request):
+        owner = actor(request)
+        # Only delivered text belongs in the history preview, including interrupted prefixes.
+        visible = (Message.conversation_id == Conversation.id, Message.delivered_text != "")
+        last_message = select(func.max(Message.created_at)).where(*visible).scalar_subquery()
+        updated_at = func.coalesce(last_message, Conversation.created_at).label("updated_at")
+        preview = (select(func.substr(Message.delivered_text, 1, 120)).where(*visible)
+                   .order_by(Message.created_at.desc(), Message.role.asc(), Message.id.desc())
+                   .limit(1).scalar_subquery())
+        with sessions() as db:
+            rows = db.execute(select(Conversation.id, Conversation.title, Conversation.created_at,
+                                     updated_at, func.coalesce(preview, "").label("preview"))
+                              .where(Conversation.owner_id == owner.id)
+                              .order_by(updated_at.desc(), Conversation.created_at.desc(), Conversation.id.desc()))
+            return [dict(row._mapping) for row in rows]
+
     @app.post("/api/conversations")
     async def new_conversation(request: Request):
         owner = actor(request)
@@ -239,7 +256,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
         with sessions() as db:
             owned_conversation(db, conversation_id, owner.id)
             rows = db.scalars(select(Message).where(Message.conversation_id == conversation_id)
-                              .order_by(Message.created_at)).all()
+                              .order_by(Message.created_at, Message.role.desc(), Message.id)).all()
             return [message_view(row) for row in rows if row.delivered_text]
 
     async def produce(g: Generation, prompt: list[dict[str, str]], profile, language, memories, reply_provider):
@@ -296,7 +313,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
                                       .order_by(Memory.created_at).limit(20)))
             history = list(db.scalars(select(Message).where(Message.conversation_id == conversation_id,
                                                            Message.context_revision == profile.revision)
-                                     .order_by(Message.created_at.desc()).limit(30)))
+                                     .order_by(Message.created_at.desc(), Message.role.asc(), Message.id.desc()).limit(30)))
             language = language_for(text, profile.language)
             prompt = [{"role": "system", "content": compile_persona(profile, memories, language)}]
             prompt.extend({"role": row.role, "content": row.delivered_text}

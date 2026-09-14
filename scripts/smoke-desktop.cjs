@@ -86,8 +86,9 @@ async function run() {
   await win.webContents.executeJavaScript('window.qibanDesktop.setAlwaysOnTop(false)')
   assert.equal(win.isAlwaysOnTop(), false)
   const settings = process.env.QIBAN_SMOKE_SETTINGS === '1' ? await checkSettings(win, output) : 'skipped'
-  writeFileSync(path.join(output, 'desktop-smoke.json'), JSON.stringify({passed:true, state, speech, settings}, null, 2))
-  console.log('DESKTOP_SMOKE_PASSED', JSON.stringify({state, speech, settings}))
+  const history = process.env.QIBAN_SMOKE_HISTORY === '1' ? await checkHistory(win, output) : 'skipped'
+  writeFileSync(path.join(output, 'desktop-smoke.json'), JSON.stringify({passed:true, state, speech, settings, history}, null, 2))
+  console.log('DESKTOP_SMOKE_PASSED', JSON.stringify({state, speech, settings, history}))
   app.quit()
 }
 run().catch(error => {
@@ -96,6 +97,106 @@ run().catch(error => {
   writeFileSync(path.join(output, 'desktop-smoke.json'), JSON.stringify({passed:false, error:String(error.stack)}, null, 2))
   console.error(error); process.exitCode = 1; app.quit()
 })
+
+async function checkHistory(win, output) {
+  const evaluate = script => win.webContents.executeJavaScript(script)
+  const until = async expression => {
+    for (let i = 0; i < 160; i++) {
+      if (await evaluate(expression)) return
+      await sleep(100)
+    }
+    throw new Error('History UI timed out: ' + expression)
+  }
+  const list = () => evaluate(`fetch('/api/conversations').then(r => r.json())`)
+  const input = text => evaluate(`(() => {
+    const el = document.querySelector('[aria-label="聊天输入"]')
+    el.value = ${JSON.stringify(text)}; el.dispatchEvent(new Event('input', {bubbles:true}))
+  })()`)
+  const select = id => evaluate(`document.querySelector('[data-conversation-id="${id}"]').click()`)
+  const active = id => `document.querySelector('.history-item[aria-current="true"]')?.dataset.conversationId === '${id}' && !document.querySelector('[aria-label="聊天输入"]').disabled`
+  const send = async text => {
+    await input(text)
+    await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
+    await until(`!!document.querySelector('.message.assistant .message-body') && !document.querySelector('[aria-label="停止回复"]') && !document.querySelector('.error-banner')`)
+  }
+  const boot = await evaluate(`fetch('/api/bootstrap', {method:'POST'}).then(r=>r.json())`)
+  assert.equal(boot.capabilities.chat, 'demo', 'history smoke must use isolated demo data')
+  assert.equal(await evaluate(`document.querySelector('.history-toggle').getAttribute('aria-expanded')`), 'false')
+  // Start with a new pair so this smoke can run again against its own retained test data.
+  await evaluate(`document.querySelector('[aria-label="新聊天"]').click()`)
+  await until(`!!document.querySelector('.welcome-message') && !document.querySelector('[aria-label="聊天输入"]').disabled`)
+  await evaluate(`document.querySelector('.history-toggle').click()`)
+  await until(`!!document.querySelector('.history-item[aria-current="true"]')`)
+  const first = await evaluate(`document.querySelector('.history-item[aria-current="true"]').dataset.conversationId`)
+  await evaluate(`document.querySelector('.history-toggle').click()`)
+  await send('第一段：今天去海边散步了。')
+  await input('留在第一段的草稿')
+  const count = (await list()).length
+  await evaluate(`(() => { const b=document.querySelector('[aria-label="新聊天"]'); b.click(); b.click(); })()`)
+  await until(`!!document.querySelector('.welcome-message') && !document.querySelector('[aria-label="聊天输入"]').disabled`)
+  assert.equal((await list()).length, count + 1, 'rapid new-chat clicks create just one chat')
+  assert.equal(await evaluate(`document.querySelector('[aria-label="聊天输入"]').value`), '')
+  await evaluate(`document.querySelector('.history-toggle').click()`)
+  await until(`document.querySelectorAll('.history-item').length === ${count + 1}`)
+  const second = await evaluate(`document.querySelector('.history-item[aria-current="true"]').dataset.conversationId`)
+  assert.notEqual(first, second)
+  await send('第二段：晚餐吃什么呢？')
+  await select(first)
+  await until(active(first))
+  assert.equal(await evaluate(`document.querySelector('[aria-label="聊天输入"]').value`), '留在第一段的草稿')
+  assert.ok(await evaluate(`document.querySelector('.chat-history').textContent.includes('今天去海边散步了')`))
+  assert.equal(await evaluate(`document.querySelector('.chat-history').textContent.includes('晚餐吃什么')`), false)
+  await send('继续刚才的散步话题。')
+  await until(`document.querySelector('.history-item')?.dataset.conversationId === '${first}'`)
+
+  // An in-flight response must persist only its displayed prefix and never spill into the next chat.
+  await input('切换过程中测试回复停止。')
+  await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
+  await until(`!!document.querySelector('[aria-label="停止回复"]') && document.querySelector('.message.assistant:last-child .message-body')?.textContent.length > 4`)
+  await select(second)
+  await until(active(second))
+  await sleep(600)
+  assert.equal(await evaluate(`document.querySelector('.chat-history').textContent.includes('切换过程中')`), false)
+  const oldMessages = await evaluate(`fetch('/api/conversations/${first}/messages').then(r=>r.json())`)
+  assert.equal(oldMessages.at(-1).delivery_state, 'interrupted')
+  assert.ok(oldMessages.at(-1).text)
+
+  // A failed history request must preserve the current chat and draft, then allow retry.
+  await input('第二段的待发草稿')
+  await evaluate(`(() => {
+    window.smokeFetch = window.fetch
+    window.fetch = (url, options) => String(url).endsWith('/${first}/messages')
+      ? Promise.resolve(new Response(JSON.stringify({detail:'历史读取测试失败'}), {status:503, headers:{'Content-Type':'application/json'}}))
+      : window.smokeFetch(url, options)
+  })()`)
+  await select(first)
+  await until(`document.querySelector('.toast')?.textContent.includes('历史读取测试失败')`)
+  assert.ok(await evaluate(active(second)))
+  assert.equal(await evaluate(`document.querySelector('[aria-label="聊天输入"]').value`), '第二段的待发草稿')
+  await evaluate('window.fetch = window.smokeFetch; delete window.smokeFetch')
+  await select(first)
+  await until(active(first))
+
+  // Startup restores the selected old chat, even though a newer chat exists.
+  await win.webContents.reload()
+  await until(`!!document.querySelector('.history-toggle') && !document.querySelector('[aria-label="聊天输入"]').disabled`)
+  assert.equal(await evaluate(`document.querySelector('.history-toggle').getAttribute('aria-expanded')`), 'false')
+  assert.ok(await evaluate(`document.querySelector('.chat-history').textContent.includes('今天去海边散步了')`))
+  await evaluate(`document.querySelector('.history-toggle').click()`)
+  await until(active(first))
+  await sleep(400)
+  writeFileSync(path.join(output, 'desktop-history.png'), (await win.webContents.capturePage()).toPNG())
+  win.setBounds({width:820, height:620})
+  await sleep(400)
+  const layout = await evaluate(`(() => {
+    const list=document.querySelector('.history-list').getBoundingClientRect()
+    const composer=document.querySelector('.composer-area').getBoundingClientRect()
+    return {listBottom:list.bottom, composerTop:composer.top, composerBottom:composer.bottom, height:innerHeight}
+  })()`)
+  assert.ok(layout.listBottom <= layout.composerTop && layout.composerBottom <= layout.height + 1, 'history fits the smallest desktop window')
+  writeFileSync(path.join(output, 'desktop-history-small.png'), (await win.webContents.capturePage()).toPNG())
+  return {passed:true, conversations:(await list()).length, interruption:true, draftRestore:true, failedLoadRecovery:true, reloadRestore:true, smallWindow:true}
+}
 
 async function checkSettings(win, output) {
   const { createServer } = require('node:http')

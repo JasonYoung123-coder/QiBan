@@ -98,6 +98,77 @@ def test_untrusted_browser_origin_and_missing_session_are_rejected(tmp_path):
         assert client.post("/api/audio/speech", json={"text": "hello"}).status_code == 503
 
 
+def test_history_list_is_private_and_retains_all_conversations(tmp_path):
+    app = create_app(settings(tmp_path))
+    with TestClient(app) as alice, TestClient(app) as bob:
+        assert alice.get("/api/conversations").status_code == 401
+        first = start(alice)
+        other = start(bob)
+        expected = {first}
+        for _ in range(25):
+            expected.add(alice.post("/api/conversations").json()["id"])
+        history = alice.get("/api/conversations").json()
+        assert {item["id"] for item in history} == expected
+        assert all(item["title"] == "新的相伴" and item["preview"] == "" for item in history)
+        assert [item["id"] for item in bob.get("/api/conversations").json()] == [other]
+        assert bob.get(f"/api/conversations/{first}/messages").status_code == 404
+
+
+def test_history_preview_only_contains_delivered_prefix(tmp_path):
+    from sqlalchemy import update
+
+    from backend.database import Message
+
+    app = create_app(settings(tmp_path))
+    with TestClient(app) as client:
+        conversation = start(client)
+        result = send(client, conversation, "今天想聊聊")
+        # A user/assistant pair is inserted together and can share the same clock tick.
+        with app.state.sessions() as db:
+            db.execute(update(Message).where(Message.conversation_id == conversation)
+                       .values(created_at="2026-09-14T00:00:00+00:00"))
+            db.commit()
+        assert client.get("/api/conversations").json()[0]["preview"] == "今天想聊聊"
+        prefix = result[-1]["payload"]["text"][:8]
+        client.post(f"/api/conversations/{conversation}/interrupt",
+                    json={"generation_id": result[0]["generation_id"], "displayed_text": prefix})
+        summary = client.get("/api/conversations").json()[0]
+        assert summary["title"] == "今天想聊聊"
+        assert summary["preview"] == prefix
+        history = client.get(f"/api/conversations/{conversation}/messages").json()
+        assert [row["role"] for row in history] == ["user", "assistant"]
+
+
+def test_old_history_can_be_reopened_continued_and_restored_after_restart(tmp_path):
+    prompts = []
+
+    class Provider:
+        async def stream(self, prompt, **_kwargs):
+            prompts.append(prompt)
+            yield "我记得这次聊天。"
+
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg, Provider())) as client:
+        first = start(client)
+        result = send(client, first, "第一段，周末去看海")
+        client.post(f"/api/conversations/{first}/delivery",
+                    json={"generation_id": result[0]["generation_id"], "displayed_text": "我记得这次聊天。"})
+        second = client.post("/api/conversations").json()["id"]
+        assert [row["id"] for row in client.get("/api/conversations").json()] == [second, first]
+        send(client, second, "第二段，讨论晚餐")
+        assert client.get(f"/api/conversations/{first}/messages").json()[-1]["text"] == "我记得这次聊天。"
+        send(client, first, "接着刚才的话题")
+        assert [row["id"] for row in client.get("/api/conversations").json()] == [first, second]
+        contents = [item["content"] for item in prompts[-1]]
+        assert "第一段，周末去看海" in contents and "我记得这次聊天。" in contents
+        assert "第二段，讨论晚餐" not in contents
+        token = client.cookies.get("qiban_session")
+    with TestClient(create_app(cfg, Provider())) as restored:
+        restored.cookies.set("qiban_session", token)
+        assert {item["id"] for item in restored.get("/api/conversations").json()} == {first, second}
+        assert restored.get(f"/api/conversations/{first}/messages").json()[-1]["text"] == "接着刚才的话题"
+
+
 @pytest.mark.asyncio
 async def test_memory_edit_cancels_inflight_generation_and_rejects_late_delivery(tmp_path):
     started = asyncio.Event()

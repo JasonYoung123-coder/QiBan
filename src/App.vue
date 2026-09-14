@@ -5,18 +5,25 @@ import { ArrowUp, AudioLines, BookHeart, Check, ChevronRight, Heart, Leaf, Loade
 import { Room, RoomEvent, Track } from 'livekit-client'
 import Live2DStage from './components/Live2DStage.vue'
 import ConnectionSettings from './components/ConnectionSettings.vue'
+import ConversationHistory from './components/ConversationHistory.vue'
 import { api, consumeEvents } from './lib/api'
 import { SpeechPlayer } from './lib/audio'
 import { TurnGate } from './lib/turn-gate'
 import { importModelFiles } from './lib/model-files'
 import { characterFor, characterPresets } from './lib/presets'
 import type { ModelDefinition } from './lib/model-files'
-import type { AvatarState, Bootstrap, Capabilities, Language, Memory, Message, Mood, Profile, StreamEvent } from './lib/contracts'
+import type { AvatarState, Bootstrap, Capabilities, ConversationSummary, Language, Memory, Message, Mood, Profile, StreamEvent } from './lib/contracts'
 
 const profile = ref<Profile>({ id: '', revision: 1, name: '栖栖', user_name: '', persona: '', language: 'auto', character_id: 'hiyori' })
 const draft = ref({ ...profile.value })
 const capabilities = ref<Capabilities>({ chat: 'demo', stt: false, tts: false, realtime: false, model: '' })
 const conversation = ref('')
+const conversations = ref<ConversationSummary[]>([])
+const historyLoading = ref(false)
+const historyError = ref('')
+const switchingConversation = ref(false)
+const conversationDrafts = new Map<string, string>()
+let historyRequest = 0
 const messages = ref<Message[]>([])
 const memories = ref<Memory[]>([])
 const input = ref('')
@@ -96,15 +103,41 @@ async function load(): Promise<void> {
     draft.value = { ...data.profile }
     capabilities.value = data.capabilities
     conversation.value = data.conversation_id
+    await refreshConversations()
+    try {
+      const last = localStorage.getItem(`qiban.conversation.${profile.value.id}`)
+      if (last && conversations.value.some(item => item.id === last)) conversation.value = last
+    } catch { /* Local history remains available if browser storage is disabled. */ }
     const [history, facts] = await Promise.all([
       api<Message[]>(`/conversations/${conversation.value}/messages`), api<Memory[]>('/memories'),
     ])
     messages.value = history
+    rememberConversation()
     memories.value = facts
     ready.value = true
     error.value = ''
     await scrollDown()
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '本地服务尚未启动。' }
+}
+
+function rememberConversation(): void {
+  try { localStorage.setItem(`qiban.conversation.${profile.value.id}`, conversation.value) }
+  catch { /* Selection persistence is optional; the database retains every conversation. */ }
+}
+
+async function refreshConversations(): Promise<void> {
+  const request = ++historyRequest
+  historyLoading.value = true
+  try {
+    const list = await api<ConversationSummary[]>('/conversations')
+    if (request !== historyRequest) return
+    conversations.value = list
+    historyError.value = ''
+  } catch {
+    if (request === historyRequest) historyError.value = '历史列表暂时未能加载。'
+  } finally {
+    if (request === historyRequest) historyLoading.value = false
+  }
 }
 
 async function scrollDown(): Promise<void> {
@@ -135,7 +168,7 @@ async function stop(): Promise<number> {
 
 async function send(preset?: string): Promise<void> {
   const text = (preset ?? input.value).trim()
-  if (!text || !ready.value || room.value || recording.value || microphonePending.value) return
+  if (!text || !ready.value || switchingConversation.value || connecting.value || room.value || recording.value || microphonePending.value) return
   const attempt = await stop()
   if (attempt !== actionEpoch) return
   if (readAloud.value && capabilities.value.tts) void player.arm()
@@ -197,22 +230,41 @@ async function send(preset?: string): Promise<void> {
     }
   } finally {
     if (gate.current(ticket)) busy.value = false
+    void refreshConversations()
     await scrollDown()
   }
 }
 
 async function freshConversation(): Promise<void> {
-  if (room.value) await leaveCall()
-  await stop()
-  stopRecording(false)
+  await openConversation()
+}
+
+async function openConversation(id?: string): Promise<void> {
+  if (!ready.value || switchingConversation.value || connecting.value || saving.value || id === conversation.value) return
+  // Lock before awaiting cancellation so rapid clicks cannot start overlapping transitions.
+  switchingConversation.value = true
   try {
-    const created = await api<{ id: string }>('/conversations', { method: 'POST' })
-    conversation.value = created.id
-    messages.value = []
+    stopRecording(false)
+    const attempt = await stop()
+    if (attempt !== actionEpoch) return
+    const target = id ?? (await api<{ id: string }>('/conversations', { method: 'POST' })).id
+    const history = id ? await api<Message[]>(`/conversations/${target}/messages`) : []
+    if (attempt !== actionEpoch) return
+    // Commit selection only after loading succeeds; keep each conversation's unsent draft.
+    conversationDrafts.set(conversation.value, input.value)
+    conversation.value = target
+    messages.value = history
+    input.value = conversationDrafts.get(target) ?? ''
+    rememberConversation()
     tab.value = 'chat'
     error.value = ''
-    notify('开启了新的聊天，已保存的记忆仍然保留。')
-  } catch (cause) { notify(String(cause)) }
+    if (!id) notify('已开启新聊天，之前的内容可在「历史聊天」中找回。')
+    await scrollDown()
+  } catch (cause) { notify(cause instanceof Error ? cause.message : '未能打开聊天，请重试。') }
+  finally {
+    switchingConversation.value = false
+    void refreshConversations()
+  }
 }
 
 async function saveProfile(): Promise<void> {
@@ -265,7 +317,7 @@ function toggleLowMotion(): void {
 }
 
 async function replay(message: Message): Promise<void> {
-  if (busy.value || room.value) return
+  if (busy.value || room.value || switchingConversation.value || connecting.value) return
   try { await player.play(message.text, profile.value.language, capabilities.value.tts) }
   catch (cause) { notify(cause instanceof Error ? cause.message : '朗读未完成。') }
 }
@@ -300,10 +352,12 @@ function stopRecording(submit: boolean): void {
 }
 
 async function toggleRecording(): Promise<void> {
+  if (switchingConversation.value || connecting.value) return
   if (!capabilities.value.stt) { tab.value = 'settings'; notify('录音识别需要先接入语音服务，现在可用文字聊天和系统朗读。'); return }
   if (recording.value) { stopRecording(true); return }
   if (microphonePending.value) { stopRecording(false); return }
-  await stop()
+  const attempt = await stop()
+  if (attempt !== actionEpoch || switchingConversation.value) return
   const capture = ++captureEpoch
   microphonePending.value = true
   try {
@@ -344,16 +398,22 @@ async function toggleRecording(): Promise<void> {
 
 async function leaveCall(): Promise<void> {
   const existing = room.value
+  const callConversation = conversation.value
+  const epoch = actionEpoch
   room.value = undefined
-  await existing?.disconnect()
-  if (existing) await api(`/conversations/${conversation.value}/voice-end`, { method: 'POST' }).catch(() => {})
   player.stop()
   liveCaption.value = ''
-  if (ready.value) messages.value = await api<Message[]>(`/conversations/${conversation.value}/messages`)
+  await existing?.disconnect()
+  if (existing) await api(`/conversations/${callConversation}/voice-end`, { method: 'POST' }).catch(() => {})
+  if (ready.value) {
+    const history = await api<Message[]>(`/conversations/${callConversation}/messages`)
+    if (conversation.value === callConversation && actionEpoch === epoch) messages.value = history
+    void refreshConversations()
+  }
 }
 
 async function toggleCall(): Promise<void> {
-  if (connecting.value) return
+  if (connecting.value || switchingConversation.value) return
   if (room.value) { await leaveCall(); return }
   if (!capabilities.value.realtime) { tab.value = 'settings'; notify('实时通话需要配置 LiveKit 与语音服务。'); return }
   connecting.value = true
@@ -474,11 +534,12 @@ onBeforeUnmount(() => {
     <section class="conversation-panel">
       <header class="panel-header">
         <div><span class="eyebrow">{{ tab === 'chat' ? 'OUR LITTLE SPACE' : 'MAKE IT YOURS' }}</span><h1>{{ { chat: '此刻，想聊点什么？', persona: '让陪伴有自己的性格', memory: '值得记住的小事', settings: '按你的节奏相处' }[tab] }}</h1></div>
-        <button v-if="tab === 'chat'" class="icon-button" aria-label="新聊天" title="开启新聊天" :disabled="!ready" @click="freshConversation"><Plus :size="20" /></button>
+        <button v-if="tab === 'chat'" class="icon-button" aria-label="新聊天" title="开启新聊天" :disabled="!ready || switchingConversation || connecting || saving" @click="freshConversation"><LoaderCircle v-if="switchingConversation" :size="20" class="spin" /><Plus v-else :size="20" /></button>
         <button v-if="desktop" class="icon-button close-window" aria-label="关闭窗口" @click="desktop.close()"><X :size="18" /></button>
       </header>
 
       <template v-if="tab === 'chat'">
+        <ConversationHistory :conversations="conversations" :active="conversation" :loading="historyLoading" :error="historyError" :disabled="!ready || switchingConversation || connecting || saving" @refresh="refreshConversations" @select="openConversation" />
         <div class="connection-strip" :class="{ connected: capabilities.chat === 'connected' }">
           <span class="connection-dot" />{{ capabilities.chat === 'connected' ? '聊天模型已配置' : '示范模式 · 在设置中连接你的模型' }}
           <button aria-label="查看连接设置" @click="tab = 'settings'"><ChevronRight :size="15" /></button>
@@ -498,24 +559,24 @@ onBeforeUnmount(() => {
           <article v-for="message in messages" :key="message.id" class="message" :class="message.role">
             <span class="message-author">{{ message.role === 'assistant' ? profile.name : profile.user_name || '你' }}</span>
             <div class="message-body"><span v-if="message.text">{{ message.text }}</span><span v-else-if="busy" class="typing-dots"><i /><i /><i /></span><span v-else class="message-unfinished">{{ message.delivery_state === 'failed' ? '这次回复未完成。' : '回复已停止。' }}</span></div>
-            <button v-if="message.role === 'assistant' && message.text" class="message-play" aria-label="朗读这条回复" :disabled="busy || !!room" @click="replay(message)"><Volume2 :size="13" /></button>
+            <button v-if="message.role === 'assistant' && message.text" class="message-play" aria-label="朗读这条回复" :disabled="busy || !!room || switchingConversation || connecting" @click="replay(message)"><Volume2 :size="13" /></button>
           </article>
           <div v-if="room" class="call-caption"><AudioLines :size="20" /><p>{{ liveCaption || '通话已连接，开始说话吧。' }}</p><button @click="leaveCall">结束通话</button></div>
         </div>
         <div v-if="error" class="error-banner" role="alert">{{ error }}<button v-if="!ready" @click="load">重新连接</button><button v-else aria-label="关闭错误提示" @click="error = ''"><X :size="14" /></button></div>
         <div class="composer-area">
           <div class="composer" :class="{ recording }">
-            <textarea ref="inputElement" v-model="input" :disabled="!ready || !!room || recording" :placeholder="recording ? '正在录音，再点一次麦克风结束…' : '慢慢说，我在听…'" aria-label="聊天输入" rows="2" maxlength="6000" @keydown.enter.exact.prevent="event => { if (!event.isComposing) send() }" />
+            <textarea ref="inputElement" v-model="input" :disabled="!ready || !!room || recording || switchingConversation || connecting" :placeholder="recording ? '正在录音，再点一次麦克风结束…' : '慢慢说，我在听…'" aria-label="聊天输入" rows="2" maxlength="6000" @keydown.enter.exact.prevent="event => { if (!event.isComposing) send() }" />
             <div class="composer-bottom">
               <div class="composer-options">
-                <button class="icon-button" :class="{ recording }" :disabled="!ready || !!room" :aria-label="recording ? '结束录音' : '录音输入'" @click="toggleRecording"><Square v-if="recording" :size="18" /><LoaderCircle v-else-if="microphonePending" :size="18" class="spin" /><Mic v-else :size="18" /></button>
-                <select :value="profile.language" aria-label="回复语言" :disabled="!ready || !!room || saving" @change="changeLanguage"><option value="auto">自动跟随语言</option><option value="zh-CN">中文</option><option value="en-US">English</option></select>
+                <button class="icon-button" :class="{ recording }" :disabled="!ready || !!room || switchingConversation || connecting" :aria-label="recording ? '结束录音' : '录音输入'" @click="toggleRecording"><Square v-if="recording" :size="18" /><LoaderCircle v-else-if="microphonePending" :size="18" class="spin" /><Mic v-else :size="18" /></button>
+                <select :value="profile.language" aria-label="回复语言" :disabled="!ready || !!room || saving || switchingConversation || connecting" @change="changeLanguage"><option value="auto">自动跟随语言</option><option value="zh-CN">中文</option><option value="en-US">English</option></select>
               </div>
               <button v-if="busy || speaking" class="stop-button" aria-label="停止回复" @click="stop"><Square :size="15" />停止</button>
-              <button v-else class="send-button" aria-label="发送消息" :disabled="!input.trim() || !ready || !!room || recording" @click="send()"><ArrowUp :size="21" /></button>
+              <button v-else class="send-button" aria-label="发送消息" :disabled="!input.trim() || !ready || !!room || recording || switchingConversation || connecting" @click="send()"><ArrowUp :size="21" /></button>
             </div>
           </div>
-          <div class="composer-footnote"><span>{{ audioSource === 'system' ? '系统朗读 · 基础口型动画' : voiceLabel }}</span><button :class="{ 'in-call': room }" :disabled="connecting || !ready" @click="toggleCall"><AudioLines :size="14" />{{ connecting ? '连接中' : room ? '结束通话' : '实时通话' }}</button></div>
+          <div class="composer-footnote"><span>{{ audioSource === 'system' ? '系统朗读 · 基础口型动画' : voiceLabel }}</span><button :class="{ 'in-call': room }" :disabled="connecting || !ready || switchingConversation" @click="toggleCall"><AudioLines :size="14" />{{ connecting ? '连接中' : room ? '结束通话' : '实时通话' }}</button></div>
         </div>
       </template>
 
@@ -559,7 +620,7 @@ onBeforeUnmount(() => {
         <div class="service-status"><span>语音识别 / 合成</span><strong>{{ capabilities.stt ? '识别已配置' : '识别待接入' }} · {{ voiceLabel }}</strong></div>
         <p v-if="capabilities.tts_pending" class="field-help">火山引擎音色待启用，请在上方语音设置中填写密钥并保存。当前使用系统声音。</p>
         <div class="service-status"><span>实时通话</span><strong>{{ capabilities.realtime ? '已配置，需语音进程在线' : '待接入 LiveKit 与语音服务' }}</strong></div>
-        <p class="build-note">栖伴 0.3 · 本地陪伴<br>Windows 本地朗读与远程音频使用声音包络驱动口型；浏览器系统朗读使用基础开合动画。</p>
+        <p class="build-note">栖伴 0.3.1 · 本地陪伴<br>Windows 本地朗读与远程音频使用声音包络驱动口型；浏览器系统朗读使用基础开合动画。</p>
       </div>
     </section>
     <div v-if="toast" class="toast" role="status"><Leaf :size="17" />{{ toast }}</div>
