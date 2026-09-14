@@ -91,7 +91,7 @@ def main():
             for file in files:
                 shutil.copy2(file, destination / file.name)
             frontend_names.append({'name':info['name'], 'version':info['version'], 'license':info.get('license')})
-    manifest = {'version':'0.3.1', 'platform':'Windows-x64', 'python':PYTHON_VERSION,
+    manifest = {'version':'0.3.2', 'platform':'Windows-x64', 'python':PYTHON_VERSION,
                 'python_sha256':PYTHON_SHA256, 'electron':'41.0.3',
                 'python_packages': sorted([{'name':d.metadata['Name'],'version':d.version}
                     for d in importlib.metadata.distributions(path=[str(packages)])], key=lambda row:row['name']),

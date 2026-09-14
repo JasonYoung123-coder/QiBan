@@ -114,6 +114,31 @@ def test_history_list_is_private_and_retains_all_conversations(tmp_path):
         assert bob.get(f"/api/conversations/{first}/messages").status_code == 404
 
 
+def test_history_retains_persona_revision_after_switch_and_reload(tmp_path):
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        conversation = start(client)
+        profile = client.post("/api/bootstrap").json()["profile"]
+        first_revision = profile["revision"]
+        first = send(client, conversation, "你是谁")
+        client.post(f"/api/conversations/{conversation}/delivery",
+                    json={"generation_id": first[0]["generation_id"], "displayed_text": first[-1]["payload"]["text"]})
+        profile.update(name="言川", character_id="natori")
+        changed = client.put("/api/profile", json=profile).json()
+        second = send(client, conversation, "你是谁")
+        client.post(f"/api/conversations/{conversation}/delivery",
+                    json={"generation_id": second[0]["generation_id"], "displayed_text": second[-1]["payload"]["text"]})
+        token = client.cookies.get("qiban_session")
+    with TestClient(create_app(cfg)) as restored:
+        restored.cookies.set("qiban_session", token)
+        replies = [row for row in restored.get(f"/api/conversations/{conversation}/messages").json()
+                   if row["role"] == "assistant"]
+        assert len(replies) == 2
+        assert "我是栖栖" in replies[0]["text"] and replies[0]["context_revision"] == first_revision
+        assert "我是言川" in replies[1]["text"] and replies[1]["context_revision"] == changed["revision"]
+        assert first_revision < changed["revision"]
+
+
 def test_history_preview_only_contains_delivered_prefix(tmp_path):
     from sqlalchemy import update
 

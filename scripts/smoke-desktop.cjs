@@ -87,8 +87,9 @@ async function run() {
   assert.equal(win.isAlwaysOnTop(), false)
   const settings = process.env.QIBAN_SMOKE_SETTINGS === '1' ? await checkSettings(win, output) : 'skipped'
   const history = process.env.QIBAN_SMOKE_HISTORY === '1' ? await checkHistory(win, output) : 'skipped'
-  writeFileSync(path.join(output, 'desktop-smoke.json'), JSON.stringify({passed:true, state, speech, settings, history}, null, 2))
-  console.log('DESKTOP_SMOKE_PASSED', JSON.stringify({state, speech, settings, history}))
+  const persona = process.env.QIBAN_SMOKE_PERSONA === '1' ? await checkPersonaBubble(win, output) : 'skipped'
+  writeFileSync(path.join(output, 'desktop-smoke.json'), JSON.stringify({passed:true, state, speech, settings, history, persona}, null, 2))
+  console.log('DESKTOP_SMOKE_PASSED', JSON.stringify({state, speech, settings, history, persona}))
   app.quit()
 }
 run().catch(error => {
@@ -97,6 +98,62 @@ run().catch(error => {
   writeFileSync(path.join(output, 'desktop-smoke.json'), JSON.stringify({passed:false, error:String(error.stack)}, null, 2))
   console.error(error); process.exitCode = 1; app.quit()
 })
+
+async function checkPersonaBubble(win, output) {
+  const evaluate = script => win.webContents.executeJavaScript(script)
+  const until = async expression => {
+    for (let i=0; i<160; i++) {
+      if (await evaluate(expression)) return
+      await sleep(100)
+    }
+    throw new Error('Persona UI timed out: ' + expression)
+  }
+  const choose = async name => {
+    await evaluate(`document.querySelector('[aria-label="人设"]').click()`)
+    await evaluate(`document.querySelector('[aria-label="选择${name}"]').click()`)
+    await evaluate(`document.querySelector('.settings-body form .primary-button').click()`)
+    await until(`document.querySelector('.companion-name')?.textContent.trim() === '${name}' && !document.querySelector('.settings-body form .primary-button').disabled && !document.querySelector('.avatar-status')`)
+  }
+  const introduce = async name => {
+    await evaluate(`document.querySelector('[aria-label="聊天"]').click()`)
+    await evaluate(`(() => { const input = document.querySelector('[aria-label="聊天输入"]'); input.value='你是谁'; input.dispatchEvent(new Event('input',{bubbles:true})); })()`)
+    await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
+    await until(`document.querySelector('.message.assistant:last-child .message-body')?.textContent.includes('我是${name}') && !document.querySelector('[aria-label="停止回复"]')`)
+    await evaluate('window.qibanDesktop.setPetMode(true)')
+    await until(`document.querySelector('.pet-bubble')?.textContent.includes('我是${name}')`)
+    await evaluate('window.qibanDesktop.setPetMode(false)')
+  }
+  assert.equal(await evaluate(`fetch('/api/bootstrap',{method:'POST'}).then(r=>r.json()).then(r=>r.capabilities.chat)`),'demo')
+  await choose('栖栖')
+  await introduce('栖栖')
+  await choose('言川')
+  await evaluate('window.qibanDesktop.setPetMode(true)')
+  await until(`document.querySelector('.pet-bubble')?.textContent === '言川，在这里，陪着你。'`)
+  writeFileSync(path.join(output,'desktop-pet-natori.png'), (await win.webContents.capturePage()).toPNG())
+  await evaluate('window.qibanDesktop.setPetMode(false)')
+  await win.webContents.reload()
+  await until(`!!document.querySelector('.history-toggle') && !document.querySelector('[aria-label="聊天输入"]').disabled`)
+  await evaluate('window.qibanDesktop.setPetMode(true)')
+  await until(`document.querySelector('.pet-bubble')?.textContent === '言川，在这里，陪着你。'`)
+  await evaluate('window.qibanDesktop.setPetMode(false)')
+  assert.ok(await evaluate(`document.querySelector('.chat-history').textContent.includes('我是栖栖')`), 'previous persona history is retained')
+  await introduce('言川')
+
+  // Renaming without changing the avatar also invalidates old self-introductions.
+  await evaluate(`document.querySelector('[aria-label="人设"]').click()`)
+  await evaluate(`(() => { const input=document.querySelector('.field-pair input'); input.value='阿川'; input.dispatchEvent(new Event('input',{bubbles:true})); })()`)
+  await evaluate(`document.querySelector('.settings-body form .primary-button').click()`)
+  await until(`document.querySelector('.companion-name')?.textContent.trim() === '阿川' && !document.querySelector('.settings-body form .primary-button').disabled`)
+  await evaluate('window.qibanDesktop.setPetMode(true)')
+  await until(`document.querySelector('.pet-bubble')?.textContent === '阿川，在这里，陪着你。'`)
+  await evaluate('window.qibanDesktop.setPetMode(false)')
+  await choose('栖栖')
+  await evaluate('window.qibanDesktop.setPetMode(true)')
+  await until(`document.querySelector('.pet-bubble')?.textContent === '栖栖，在这里，陪着你。'`)
+  writeFileSync(path.join(output,'desktop-pet-hiyori.png'), (await win.webContents.capturePage()).toPNG())
+  await evaluate('window.qibanDesktop.setPetMode(false)')
+  return {passed:true, bothCharacters:true, renamedCharacter:true, reloadSafe:true, historyRetained:true, newReplyVisible:true}
+}
 
 async function checkHistory(win, output) {
   const evaluate = script => win.webContents.executeJavaScript(script)

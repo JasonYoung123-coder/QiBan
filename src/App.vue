@@ -86,7 +86,9 @@ const player = new SpeechPlayer({
 })
 const state = computed<AvatarState>(() => room.value ? liveState.value : recording.value ? 'listening' : speaking.value ? 'speaking' : busy.value ? 'thinking' : 'idle')
 const stateText = computed(() => ({ idle: '在这里，陪着你', listening: '我在听', thinking: '正在回应', speaking: '正在说话' })[state.value])
-const lastAssistant = computed(() => [...messages.value].reverse().find(message => message.role === 'assistant' && message.text))
+// Historical replies stay in chat, but a former persona must never speak for the current pet.
+const lastAssistant = computed(() => [...messages.value].reverse().find(message =>
+  message.role === 'assistant' && message.text && message.context_revision === profile.value.revision))
 const voiceLabel = computed(() => capabilities.value.tts_provider === 'volcengine' ? '火山引擎语音'
   : capabilities.value.tts_provider === 'windows' ? 'Windows 本地朗读' : capabilities.value.tts ? '已配置的语音服务' : '浏览器系统朗读')
 
@@ -179,8 +181,8 @@ async function send(preset?: string): Promise<void> {
   mood.value = /累|难过|烦|tired|sad|stress/i.test(text) ? 'concerned' : 'warm'
   const ticket = gate.begin(conversation.value)
   const clientTurnId = crypto.randomUUID()
-  messages.value.push({ id: clientTurnId, role: 'user', text, generation_id: '', delivery_state: 'delivered' })
-  messages.value.push({ id: `pending-${clientTurnId}`, role: 'assistant', text: '', generation_id: '', delivery_state: 'pending' })
+  messages.value.push({ id: clientTurnId, role: 'user', text, generation_id: '', delivery_state: 'delivered', context_revision: profile.value.revision })
+  messages.value.push({ id: `pending-${clientTurnId}`, role: 'assistant', text: '', generation_id: '', delivery_state: 'pending', context_revision: profile.value.revision })
   const answer = messages.value[messages.value.length - 1]
   currentAssistant = answer
   controller = new AbortController()
@@ -195,6 +197,9 @@ async function send(preset?: string): Promise<void> {
       const event = raw as StreamEvent
       if (!gate.accept(ticket, event)) return
       if (event.type === 'assistant.started') {
+        // Memory edits can also advance the server's context revision between replies.
+        profile.value.revision = event.session_epoch
+        answer.context_revision = event.session_epoch
         currentGeneration = event.generation_id
         answer.generation_id = event.generation_id
         answer.id = event.payload.message_id ?? answer.id
@@ -519,7 +524,7 @@ onBeforeUnmount(() => {
         <button aria-label="返回聊天窗口" @click="togglePet"><MessageCircle :size="18" /> 聊聊天</button>
         <button aria-label="停止说话" @click="stop"><Square :size="16" /></button>
       </div>
-      <div v-if="petMode && lastAssistant" class="pet-bubble">{{ lastAssistant.text.slice(0, 90) }}</div>
+      <div v-if="petMode" class="pet-bubble">{{ lastAssistant ? lastAssistant.text.slice(0, 90) : `${profile.name}，${stateText}。` }}</div>
       <footer class="companion-footer">
         <div class="companion-name">{{ profile.name }}<span class="state-dot" :class="state" /></div>
         <p aria-live="polite">{{ stateText }}</p>
@@ -620,7 +625,7 @@ onBeforeUnmount(() => {
         <div class="service-status"><span>语音识别 / 合成</span><strong>{{ capabilities.stt ? '识别已配置' : '识别待接入' }} · {{ voiceLabel }}</strong></div>
         <p v-if="capabilities.tts_pending" class="field-help">火山引擎音色待启用，请在上方语音设置中填写密钥并保存。当前使用系统声音。</p>
         <div class="service-status"><span>实时通话</span><strong>{{ capabilities.realtime ? '已配置，需语音进程在线' : '待接入 LiveKit 与语音服务' }}</strong></div>
-        <p class="build-note">栖伴 0.3.1 · 本地陪伴<br>Windows 本地朗读与远程音频使用声音包络驱动口型；浏览器系统朗读使用基础开合动画。</p>
+        <p class="build-note">栖伴 0.3.2 · 本地陪伴<br>Windows 本地朗读与远程音频使用声音包络驱动口型；浏览器系统朗读使用基础开合动画。</p>
       </div>
     </section>
     <div v-if="toast" class="toast" role="status"><Leaf :size="17" />{{ toast }}</div>
