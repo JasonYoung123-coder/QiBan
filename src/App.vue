@@ -9,10 +9,11 @@ import { api, consumeEvents } from './lib/api'
 import { SpeechPlayer } from './lib/audio'
 import { TurnGate } from './lib/turn-gate'
 import { importModelFiles } from './lib/model-files'
+import { characterFor, characterPresets } from './lib/presets'
 import type { ModelDefinition } from './lib/model-files'
 import type { AvatarState, Bootstrap, Capabilities, Language, Memory, Message, Mood, Profile, StreamEvent } from './lib/contracts'
 
-const profile = ref<Profile>({ id: '', revision: 1, name: '栖栖', user_name: '', persona: '', language: 'auto' })
+const profile = ref<Profile>({ id: '', revision: 1, name: '栖栖', user_name: '', persona: '', language: 'auto', character_id: 'hiyori' })
 const draft = ref({ ...profile.value })
 const capabilities = ref<Capabilities>({ chat: 'demo', stt: false, tts: false, realtime: false, model: '' })
 const conversation = ref('')
@@ -38,6 +39,15 @@ const toast = ref('')
 const modelName = ref('Live2D')
 const modelReady = ref(false)
 const customModel = shallowRef<ModelDefinition>()
+const character = computed(() => characterFor(profile.value.character_id))
+function chooseCharacter(preset: typeof characterPresets[number]): void {
+  Object.assign(draft.value, { character_id: preset.id, name: preset.name, persona: preset.persona })
+}
+watch(() => profile.value.character_id, () => {
+  customModel.value = undefined
+  importedDispose?.(); importedDispose = undefined
+  modelReady.value = false
+})
 const chatScroll = ref<HTMLDivElement>()
 const inputElement = ref<HTMLTextAreaElement>()
 const fileInput = ref<HTMLInputElement>()
@@ -441,7 +451,7 @@ onBeforeUnmount(() => {
       <div class="space-caption"><span class="caption-line" /> 给日常留一点柔软</div>
       <div class="avatar-scene">
         <div class="scene-glow" /><div class="scene-floor" />
-        <Live2DStage :mouth="mouth" :state="state" :mood="mood" :low-motion="lowMotion" :pet-mode="petMode" :custom-model="customModel"
+        <Live2DStage :mouth="mouth" :state="state" :mood="mood" :low-motion="lowMotion" :pet-mode="petMode" :custom-model="customModel" :model-url="character.url" :model-label="character.model"
           @ready="name => { modelName = name; modelReady = true }" @error="value => { modelReady = false; notify(value) }"
           @interact="() => { if (!busy) { mood = 'happy'; notify(`${profile.name} 看向了你。`) } }" />
       </div>
@@ -457,7 +467,7 @@ onBeforeUnmount(() => {
           <button :class="{ selected: readAloud }" :aria-pressed="readAloud" title="回复朗读" @click="toggleReadAloud"><Volume2 v-if="readAloud" :size="16" /><VolumeX v-else :size="16" />{{ readAloud ? '回复朗读' : '安静陪伴' }}</button>
           <button :aria-pressed="lowMotion" @click="toggleLowMotion"><Leaf :size="15" />{{ lowMotion ? '低动态' : '自然动作' }}</button>
         </div>
-        <small class="model-credit">{{ customModel ? '自定义模型 · 本次启动有效' : '示例形象 Hiyori © Live2D Inc.' }}<span v-if="!modelReady"> · 加载中</span></small>
+        <small class="model-credit">{{ customModel ? '自定义模型 · 本次启动有效' : `示例形象 ${character.model} © Live2D Inc.` }}<span v-if="!modelReady"> · 加载中</span></small>
       </footer>
     </main>
 
@@ -512,6 +522,12 @@ onBeforeUnmount(() => {
       <div v-else-if="tab === 'persona'" class="settings-body">
         <p class="section-intro">定义性格和表达习惯。换一种语言，仍然是同一个伙伴。</p>
         <form @submit.prevent="saveProfile">
+          <div class="character-choices" aria-label="预设角色">
+            <button v-for="preset in characterPresets" :key="preset.id" type="button" class="character-choice" :class="{ selected: draft.character_id === preset.id }" :aria-label="`选择${preset.name}`" :aria-pressed="draft.character_id === preset.id" @click="chooseCharacter(preset)">
+              <span class="character-seal">{{ preset.name.slice(0,1) }}</span><span><strong>{{ preset.name }} · {{ preset.gender }}</strong><small>{{ preset.style }}</small></span><Check v-if="draft.character_id === preset.id" :size="16" />
+            </button>
+          </div>
+          <p class="field-help">预设会填入形象、名字与人设，可继续调整后保存。声音可在设置中独立选择。</p>
           <div class="field-pair"><label>伙伴的名字<input v-model="draft.name" maxlength="40" required></label><label>怎么称呼你<input v-model="draft.user_name" maxlength="40" placeholder="按你喜欢的来"></label></div>
           <label>性格与相处方式<textarea v-model="draft.persona" rows="8" minlength="10" maxlength="6000" required placeholder="例如：温柔但不一味附和，愿意认真听，也会分享不同看法。" /></label>
           <div class="persona-presets"><span>试试一种感觉</span><button type="button" @click="draft.persona = '温柔、坦诚，有一点幽默。先听懂感受，再决定是否给建议。回答简短自然，不机械追问，不一味附和。'">温柔倾听</button><button type="button" @click="draft.persona = '开朗、好奇、幽默但不过度热情。像熟悉的朋友一样聊天，短句为主。允许不同意见，不用夸张赞美，不给用户压力。'">轻松朋友</button><button type="button" @click="draft.persona = '平静、细腻、尊重边界。少一些追问，多留一些空间。需要时提供具体帮助，平时可以安静相伴，中文和英文都用自然短句。'">安静相伴</button></div>
@@ -543,7 +559,7 @@ onBeforeUnmount(() => {
         <div class="service-status"><span>语音识别 / 合成</span><strong>{{ capabilities.stt ? '识别已配置' : '识别待接入' }} · {{ voiceLabel }}</strong></div>
         <p v-if="capabilities.tts_pending" class="field-help">火山引擎音色待启用，请在上方语音设置中填写密钥并保存。当前使用系统声音。</p>
         <div class="service-status"><span>实时通话</span><strong>{{ capabilities.realtime ? '已配置，需语音进程在线' : '待接入 LiveKit 与语音服务' }}</strong></div>
-        <p class="build-note">栖伴 0.2 · 本地陪伴<br>Windows 本地朗读与远程音频使用声音包络驱动口型；浏览器系统朗读使用基础开合动画。</p>
+        <p class="build-note">栖伴 0.3 · 本地陪伴<br>Windows 本地朗读与远程音频使用声音包络驱动口型；浏览器系统朗读使用基础开合动画。</p>
       </div>
     </section>
     <div v-if="toast" class="toast" role="status"><Leaf :size="17" />{{ toast }}</div>

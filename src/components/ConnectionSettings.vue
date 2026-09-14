@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { Check, LoaderCircle, Plug, RefreshCw } from 'lucide-vue-next'
 import { api } from '../lib/api'
 import type { Capabilities } from '../lib/contracts'
+import { deepseekPreset, guideLinks, voicePresets } from '../lib/presets'
 
 type Provider = 'openai' | 'responses' | 'anthropic'
 type Chat = { base_url: string; model: string; api_key?: string; api_key_set?: boolean; require_api_key: boolean; max_tokens: number; clear_key?: boolean }
@@ -17,6 +18,31 @@ const testing = ref(false)
 const message = ref('')
 const failure = ref('')
 const current = computed(() => settings.value?.chats[settings.value.chat_provider])
+const customVoice = ref(false)
+const selectedVoice = computed(() => voicePresets.find(item => item.id === settings.value?.voice.volcengine_tts_speaker))
+function chooseVoice(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  customVoice.value = value === 'custom'
+  if (!customVoice.value && settings.value) {
+    settings.value.voice.volcengine_tts_speaker = value
+    settings.value.voice.volcengine_tts_resource_id = 'seed-tts-2.0'
+  }
+}
+function useDeepSeek(): void {
+  if (!settings.value) return
+  const chat = settings.value.chats.openai
+  // Existing keys must not silently travel to a new endpoint.
+  if (chat.base_url !== deepseekPreset.base_url) { chat.api_key = ''; chat.clear_key = true }
+  settings.value.chat_provider = 'openai'
+  Object.assign(chat, deepseekPreset)
+  message.value = '已填入 DeepSeek 地址与模型，请填写对应密钥并保存。'
+}
+async function openGuide(event: MouseEvent, url: string): Promise<void> {
+  if (!window.qibanDesktop) return
+  event.preventDefault()
+  try { if (!await window.qibanDesktop.openGuide(url)) throw new Error('无法打开指引链接，请复制链接到浏览器。') }
+  catch (cause) { failure.value = cause instanceof Error ? cause.message : '打开链接失败。' }
+}
 const defaults: Record<Provider, string> = {openai: 'https://api.openai.com/v1', responses: 'https://api.openai.com/v1', anthropic: 'https://api.anthropic.com/v1'}
 const voiceKeys = ['volcengine_tts_api_key', 'tts_api_key', 'stt_api_key', 'livekit_api_key', 'livekit_api_secret', 'worker_secret']
 
@@ -24,6 +50,7 @@ function accept(result: Result): void {
   for (const chat of Object.values(result.settings.chats)) { chat.api_key = ''; chat.clear_key = false }
   for (const key of voiceKeys) { result.settings.voice[key] = ''; result.settings.voice[`${key}_clear`] = false }
   settings.value = result.settings
+  customVoice.value = !voicePresets.some(item => item.id === result.settings.voice.volcengine_tts_speaker)
   emit('saved', result.capabilities)
 }
 async function load(): Promise<void> {
@@ -70,20 +97,36 @@ onMounted(load)
     <p class="field-help">选择接口，填写模型和密钥。每种接口的配置分别保留。</p>
     <form v-if="settings && current" @submit.prevent="save">
       <fieldset :disabled="busy || testing" class="connection-fields">
+        <details class="setup-guide" :open="!current.api_key_set">
+          <summary>第一次使用？查看模型与密钥获取指引</summary>
+          <p>日常聊天推荐 DeepSeek。地址和模型可一键填入，你只需要准备自己的 API Key。</p>
+          <ol><li>打开 <a :href="guideLinks.deepseekKeys" target="_blank" rel="noopener noreferrer" @click="openGuide($event, guideLinks.deepseekKeys)">DeepSeek 密钥管理 ↗</a>，登录并创建 API Key。</li><li>按平台提示开通 API 用量，复制密钥并粘贴到下方。API 服务的额度与网页聊天账号权益分开。</li><li>点击「测试聊天连接」，成功后保存。</li></ol>
+          <button type="button" class="outline-button" aria-label="填入 DeepSeek 推荐配置" @click="useDeepSeek">填入 DeepSeek 推荐配置</button>
+          <p class="guide-value">地址 {{ deepseekPreset.base_url }}<br>模型 {{ deepseekPreset.model }}</p>
+          <a :href="guideLinks.deepseekDocs" target="_blank" rel="noopener noreferrer" @click="openGuide($event, guideLinks.deepseekDocs)">DeepSeek 官方接入说明 ↗</a>
+          <details class="other-providers"><summary>我使用 OpenAI、Anthropic 或其他服务</summary><p><a :href="guideLinks.openaiKeys" target="_blank" rel="noopener noreferrer" @click="openGuide($event, guideLinks.openaiKeys)">OpenAI 密钥管理 ↗</a> · <a :href="guideLinks.anthropicKeys" target="_blank" rel="noopener noreferrer" @click="openGuide($event, guideLinks.anthropicKeys)">Anthropic 密钥管理 ↗</a></p><p>选择对应接口后点击「填入官方地址」。使用代理或兼容服务时，URL、模型名称和密钥都由该服务提供方获取，不要混用不同平台的密钥。</p></details>
+        </details>
         <label>接口类型<select v-model="settings.chat_provider" aria-label="聊天接口类型"><option value="openai">OpenAI / 兼容接口</option><option value="responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option></select></label>
         <label>服务地址<input v-model="current.base_url" aria-label="聊天服务地址" type="url" :placeholder="defaults[settings.chat_provider]" maxlength="2048" autocomplete="off"></label>
         <button class="text-button official-address" type="button" @click="current.base_url = defaults[settings.chat_provider]">填入官方地址</button>
         <label>模型名称<input v-model="current.model" aria-label="聊天模型名称" placeholder="填写服务提供的模型名称" maxlength="200" autocomplete="off"></label>
-        <label>API Key <span class="key-status">{{ current.api_key_set ? '已保存 · 留空保留' : '尚未设置' }}</span><input v-model="current.api_key" aria-label="聊天 API Key" type="password" :placeholder="current.api_key_set ? '输入新密钥以替换' : '粘贴 API Key'" autocomplete="new-password" spellcheck="false" maxlength="4096"></label>
+        <label>API Key <span class="key-status">{{ current.api_key_set ? '已保存 · 留空保留' : '尚未设置' }}</span><input v-model="current.api_key" @input="current.clear_key = false" aria-label="聊天 API Key" type="password" :placeholder="current.api_key_set ? '输入新密钥以替换' : '粘贴 API Key'" autocomplete="new-password" spellcheck="false" maxlength="4096"></label>
         <label v-if="current.api_key_set" class="inline-option"><input v-model="current.clear_key" type="checkbox" aria-label="清除当前接口密钥">清除已保存的密钥</label>
         <details class="connection-advanced"><summary>聊天高级选项</summary><label>回复 Token 上限<input v-model.number="current.max_tokens" type="number" min="0" max="128000" step="1"></label><p class="field-help">0：OpenAI 使用服务默认值；Anthropic 使用 4096。</p><label class="inline-option"><input v-model="current.require_api_key" type="checkbox">该服务需要 API Key</label></details>
         <div class="connection-divider" />
         <h2 class="setting-title">语音合成</h2>
+        <details class="setup-guide"><summary>推荐豆包语音 · 如何获取语音密钥？</summary>
+          <ol><li>登录火山引擎，打开 <a :href="guideLinks.volcActivate" target="_blank" rel="noopener noreferrer" @click="openGuide($event, guideLinks.volcActivate)">豆包语音服务开通页面 ↗</a>，在所选项目下开通「豆包语音合成模型 2.0」。</li><li>在同一项目的 <a :href="guideLinks.volcKeys" target="_blank" rel="noopener noreferrer" @click="openGuide($event, guideLinks.volcKeys)">API Key 管理 ↗</a> 创建密钥，粘贴到下方「火山引擎 API Key」。此处填写语音 API Key，无需填写旧版 App ID 或 Access Token。</li><li>选择喜欢的声音并保存，然后开启「回复朗读」。</li></ol>
+          <p>接口地址和资源 ID 已预填，通常无需修改：<br><span class="guide-value">https://openspeech.bytedance.com/api/v3/tts/unidirectional<br>seed-tts-2.0</span></p>
+          <a :href="guideLinks.volcDocs" target="_blank" rel="noopener noreferrer" @click="openGuide($event, guideLinks.volcDocs)">查看官方控制台指引 ↗</a>
+        </details>
         <label>朗读声音<select v-model="settings.voice.tts_provider" aria-label="语音提供方"><option value="system">系统本地朗读</option><option value="volcengine">火山引擎 · 指定音色</option><option value="openai">OpenAI / 兼容语音服务</option></select></label>
         <template v-if="settings.voice.tts_provider === 'volcengine'">
           <label>火山引擎 API Key <span class="key-status">{{ settings.voice.volcengine_tts_api_key_set ? '已保存 · 留空保留' : '尚未设置' }}</span><input v-model="settings.voice.volcengine_tts_api_key" type="password" aria-label="火山引擎 API Key" autocomplete="new-password" maxlength="4096" placeholder="填写 X-Api-Key"></label>
           <label v-if="settings.voice.volcengine_tts_api_key_set" class="inline-option"><input v-model="settings.voice.volcengine_tts_api_key_clear" type="checkbox">清除火山引擎密钥</label>
-          <label>音色 ID<input v-model="settings.voice.volcengine_tts_speaker" aria-label="火山引擎音色 ID" maxlength="200"></label>
+          <label>选择配音风格<select :value="customVoice ? 'custom' : settings.voice.volcengine_tts_speaker" aria-label="配音风格" @change="chooseVoice"><optgroup v-for="gender in ['女声','男声']" :key="gender" :label="gender"><option v-for="voice in voicePresets.filter(item => item.gender === gender)" :key="voice.id" :value="voice.id">{{ voice.name }} · {{ voice.style }}</option></optgroup><option value="custom">自定义音色 ID</option></select></label>
+          <p class="field-help">{{ selectedVoice && !customVoice ? `${selectedVoice.name} · 中文及英文能力，以服务实际效果为准。` : '填写你在火山引擎音色库获取的 Speaker ID。' }} <a :href="guideLinks.volcVoices" target="_blank" rel="noopener noreferrer" @click="openGuide($event, guideLinks.volcVoices)">官方音色库 ↗</a></p>
+          <label v-if="customVoice">音色 ID<input v-model="settings.voice.volcengine_tts_speaker" aria-label="火山引擎音色 ID" maxlength="200"></label>
           <details class="connection-advanced"><summary>火山引擎高级选项</summary><label>接口地址<input v-model="settings.voice.volcengine_tts_url" type="url" maxlength="2048"></label><label>资源 ID<input v-model="settings.voice.volcengine_tts_resource_id" maxlength="200"></label></details>
         </template>
         <template v-else-if="settings.voice.tts_provider === 'openai'">
@@ -122,4 +165,12 @@ onMounted(load)
 .connection-error,.connection-success { font-size:12px; line-height:1.7; padding:10px 13px; border-radius:8px; }
 .connection-error { color:#954741; background:#fff1ef; }
 .connection-success { color:#426c58; background:#edf6ef; }
+.setup-guide { margin:0 0 20px; padding:15px 17px; background:#edf5ef; border:1px solid #d5e5da; border-radius:12px; font-size:12px; line-height:1.8; }
+.setup-guide summary { cursor:pointer; color:#416b57; font-weight:600; }
+.setup-guide p { margin:12px 0; }
+.setup-guide ol { padding-left:20px; }
+.setup-guide li { margin:8px 0; }
+.setup-guide a,.field-help a { color:#376b55; text-decoration:underline; text-underline-offset:3px; }
+.guide-value { overflow-wrap:anywhere; font-size:11px; color:#6b8074; }
+.other-providers { margin-top:15px; border-top:1px solid #d5e5da; padding-top:12px; }
 </style>

@@ -11,15 +11,15 @@
 - 参考机制：视线微动时间分布、在模型更新末尾应用口型 / 参数、保持模型比例的取景。
 - Electron 桌面壳、FastAPI 服务、记忆数据层和语音适配器为本原型独立实现；没有宣称直接使用 AIRI 的完整桌面 App 或私有 workspace 包。
 
-## Live2D Cubism 与 Hiyori
+## Live2D Cubism 与 Hiyori / Natori
 
 官方 SDK 归档：
 
 - 版本：`CubismSdkForWeb-5-r.3`
 - [官方下载地址](https://cubism.live2d.com/sdk-web/bin/CubismSdkForWeb-5-r.3.zip)
 - SHA-256：`c70cc086950c7a318515e8ee606d8458a6dd2b96773fc2514ff67bf8a2d9ead7`
-- 提取内容：`Core/live2dcubismcore.min.js`、`Samples/Resources/Hiyori` 与官方 LICENSE / NOTICE。
-- 本地位置：`public/vendor`、`public/models/Hiyori`。
+- 提取内容：`Core/live2dcubismcore.min.js`、`Samples/Resources/Hiyori`、`Samples/Resources/Natori` 与官方 LICENSE / NOTICE。
+- 本地位置：`public/vendor`、`public/models/Hiyori`、`public/models/Natori`。
 - 额外核对的官方源码仓库：[Live2D/CubismWebSamples](https://github.com/Live2D/CubismWebSamples)，提交 `b1de66b0b1f1cb881d95fb6158622aeb6a2827bd`。
 
 准备脚本校验归档哈希，并限定提取路径。未把 runtime 或示例素材纳入默认 Git 跟踪；交付本机目录含素材以便直接体验。
@@ -31,7 +31,7 @@ Cubism Core 适用 **Live2D Proprietary Software License**；示例模型适用 
 - [各示例模型条件](https://docs.live2d.com/cubism-editor-manual/sample-model/)
 - [SDK 发行许可](https://www.live2d.com/en/download/cubism-sdk/release-license/)
 
-Hiyori 用于技术体验；正式产品应选用你有权使用、修改、商业发行的模型及音色。界面保留示例形象署名。
+Hiyori 与 Natori 用于技术体验；正式产品应选用你有权使用、修改、商业发行的模型及音色。界面保留示例形象署名。
 
 ## 主要组件
 

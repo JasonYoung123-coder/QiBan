@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, globalShortcut, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, globalShortcut, dialog, shell } = require('electron')
+const { allowedGuide } = require('./guide-links.cjs')
 const { spawn } = require('node:child_process')
 const { existsSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync, renameSync } = require('node:fs')
 const { createHash } = require('node:crypto')
@@ -152,6 +153,10 @@ async function start() {
     callback({ responseHeaders: headers })
   })
   const senderAllowed = event => event.sender === mainWindow.webContents && trusted(event.senderFrame.url)
+  ipcMain.handle('qiban:open-guide', async (event, url) => {
+    if (!senderAllowed(event) || !allowedGuide(url)) return false
+    try { await shell.openExternal(url); return true } catch { return false }
+  })
   ipcMain.on('qiban:minimize', event => { if (senderAllowed(event)) mainWindow.minimize() })
   ipcMain.on('qiban:close', event => { if (senderAllowed(event)) app.quit() })
   ipcMain.handle('qiban:pet', (event, value) => senderAllowed(event) && typeof value === 'boolean' ? togglePet(value) : false)

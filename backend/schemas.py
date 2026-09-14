@@ -9,6 +9,7 @@ class ProfileUpdate(BaseModel):
     user_name: str = Field(default="", max_length=40)
     persona: str = Field(min_length=10, max_length=6000)
     language: Literal["auto", "zh-CN", "en-US"] = "auto"
+    character_id: Literal["hiyori", "natori"] = "hiyori"
 
 
 class ProfileView(ProfileUpdate):

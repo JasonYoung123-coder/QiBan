@@ -1,6 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+if exist "app\desktop\main.cjs" cd /d "%~dp0app"
 set ELECTRON_RUN_AS_NODE=
 if exist "runtime\electron\electron.exe" (
   start "" "runtime\electron\electron.exe" "desktop\main.cjs"

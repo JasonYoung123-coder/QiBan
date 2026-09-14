@@ -3,7 +3,7 @@ import secrets
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint, create_engine
+from sqlalchemy import ForeignKey, String, Text, UniqueConstraint, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -27,6 +27,7 @@ class Profile(Base):
     user_name: Mapped[str] = mapped_column(String(40), default="")
     persona: Mapped[str] = mapped_column(Text, default="温柔、坦诚，有一点幽默。先听懂感受，再决定是否给建议。回答简短自然，不机械追问，不一味附和。")
     language: Mapped[str] = mapped_column(String(12), default="auto")
+    character_id: Mapped[str] = mapped_column(String(32), default="hiyori", server_default="hiyori")
     revision: Mapped[int] = mapped_column(default=1)
 
 
@@ -66,6 +67,10 @@ def make_database(url: str):
     options = {"check_same_thread": False} if url.startswith("sqlite") else {}
     engine = create_engine(url, connect_args=options, pool_pre_ping=True)
     Base.metadata.create_all(engine)
+    # Additive migration for existing 0.1/0.2 databases; keep every profile and message intact.
+    if "character_id" not in {column["name"] for column in inspect(engine).get_columns("profiles")}:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE profiles ADD COLUMN character_id VARCHAR(32) NOT NULL DEFAULT 'hiyori'"))
     return engine, sessionmaker(engine, expire_on_commit=False)
 
 

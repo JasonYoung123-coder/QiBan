@@ -6,7 +6,7 @@ import type { AvatarState, Mood } from '../lib/contracts'
 import type { ModelDefinition } from '../lib/model-files'
 import { randomSaccadeInterval } from '../vendor/airi/eye-motions'
 
-const props = defineProps<{ mouth: number; state: AvatarState; mood: Mood; lowMotion: boolean; petMode: boolean; customModel?: ModelDefinition }>()
+const props = defineProps<{ mouth: number; state: AvatarState; mood: Mood; lowMotion: boolean; petMode: boolean; customModel?: ModelDefinition; modelUrl: string; modelLabel: string }>()
 const emit = defineEmits<{ ready: [name: string]; error: [message: string]; interact: [] }>()
 const host = ref<HTMLDivElement>()
 const loading = ref(true)
@@ -58,7 +58,7 @@ async function loadModel(): Promise<void> {
     const { Live2DModel, config } = await import('pixi-live2d-display/cubism4')
     config.sound = false
     Live2DModel.registerTicker(PIXI.Ticker)
-    const next = await Live2DModel.from(props.customModel || '/models/Hiyori/Hiyori.model3.json', {
+    const next = await Live2DModel.from(props.customModel || props.modelUrl, {
       autoInteract: false, autoUpdate: false,
     }) as Model<Cubism4InternalModel>
     if (disposed || epoch !== loadEpoch) { next.destroy(); return }
@@ -100,7 +100,7 @@ async function loadModel(): Promise<void> {
     fit()
     next.update(16.7)
     app.render()
-    emit('ready', props.customModel ? '自定义 Live2D' : 'Hiyori · Live2D')
+    emit('ready', props.customModel ? '自定义 Live2D' : `${props.modelLabel} · Live2D`)
   } catch (cause) {
     if (epoch !== loadEpoch || disposed) return
     error.value = cause instanceof Error ? cause.message : 'Live2D 模型加载失败。'
@@ -139,7 +139,7 @@ onMounted(async () => {
   if (host.value) resize.observe(host.value)
   await loadModel()
 })
-watch(() => props.customModel, () => void loadModel())
+watch([() => props.customModel, () => props.modelUrl], () => void loadModel())
 watch(() => props.petMode, fit)
 onBeforeUnmount(() => {
   disposed = true

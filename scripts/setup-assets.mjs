@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const url = 'https://cubism.live2d.com/sdk-web/bin/CubismSdkForWeb-5-r.3.zip'
 const archive = join(root, '.data', 'CubismSdkForWeb-5-r.3.zip')
 await mkdir(dirname(archive), { recursive: true })
-console.log('Preparing official Cubism Core and Hiyori sample for local evaluation.')
+console.log('Preparing official Cubism Core and Hiyori and Natori samples for local evaluation.')
 console.log('Model and runtime are separately licensed; see docs/ASSETS.md before redistribution.')
 if (!existsSync(archive)) {
   const response = await fetch(url, { signal: AbortSignal.timeout(120000) })
@@ -27,6 +27,6 @@ const result = spawnSync(python, [join(root, 'scripts', 'extract-assets.py'), ar
 if (result.status !== 0) throw new Error('Asset extraction failed; run Python dependency setup first.')
 await writeFile(join(root, '.data', 'assets-manifest.json'), JSON.stringify({
   sdk: 'CubismSdkForWeb-5-r.3', source: url, sha256: hash,
-  model: 'Hiyori', license: 'Live2D Free Material + individual sample model terms',
+  models: ['Hiyori', 'Natori'], license: 'Live2D Free Material + individual sample model terms',
 }, null, 2))
 console.log(`Assets ready. SDK SHA-256: ${hash}`)

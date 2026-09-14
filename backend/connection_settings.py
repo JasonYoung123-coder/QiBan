@@ -102,6 +102,8 @@ class ConnectionStore:
         self.document["chats"][cfg.chat_provider].update(
             base_url=cfg.chat_base_url or DEFAULT_URLS[cfg.chat_provider], model=cfg.chat_model, api_key=cfg.chat_api_key,
             require_api_key=cfg.chat_require_api_key, max_tokens=cfg.chat_max_tokens)
+        if cfg.chat_provider == "openai" and not any((cfg.chat_base_url, cfg.chat_model, cfg.chat_api_key)):
+            self.document["chats"]["openai"].update(base_url="https://api.deepseek.com", model="deepseek-flash")
         if path and path.exists():
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))

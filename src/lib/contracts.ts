@@ -8,6 +8,7 @@ export interface Profile {
   user_name: string
   persona: string
   language: Language
+  character_id: 'hiyori' | 'natori'
 }
 export interface Capabilities { chat: 'demo' | 'connected'; chat_provider?: 'openai' | 'responses' | 'anthropic'; stt: boolean; tts: boolean; tts_provider?: 'windows' | 'remote' | 'browser' | 'volcengine'; tts_pending?: boolean; realtime: boolean; model: string }
 export interface Message { id: string; role: 'user' | 'assistant'; text: string; generation_id: string; delivery_state: string }
@@ -30,6 +31,7 @@ declare global {
       setPetMode(enabled: boolean): Promise<boolean>
       setAlwaysOnTop(enabled: boolean): Promise<boolean>
       setClickThrough(enabled: boolean): void
+      openGuide(url: string): Promise<boolean>
       onPetMode(callback: (enabled: boolean) => void): () => void
     }
   }

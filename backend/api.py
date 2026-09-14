@@ -71,7 +71,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
         await asyncio.gather(*tasks, return_exceptions=True)
         engine.dispose()
 
-    app = FastAPI(title="Qiban Companion Core", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Qiban Companion Core", version="0.3.0", lifespan=lifespan)
     app.state.sessions = sessions
     app.state.settings = cfg
     app.state.generations = active
@@ -125,7 +125,7 @@ def create_app(settings: Settings | None = None, provider: ChatProvider | None =
     @app.get("/api/health")
     async def health():
         import hashlib
-        return {"ok": True, "version": "0.2.0", "service": "qiban-companion-core",
+        return {"ok": True, "version": "0.3.0", "service": "qiban-companion-core",
                 "instance": hashlib.sha256(ROOT.as_posix().lower().encode()).hexdigest()[:16]}
 
     def capabilities():

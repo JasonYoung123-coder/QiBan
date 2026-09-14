@@ -1,9 +1,11 @@
 // Exercises the actual installed Electron app, preload, CSP and renderer without opening a visible window.
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, shell } = require('electron')
 const { mkdirSync, writeFileSync } = require('node:fs')
 const path = require('node:path')
 const assert = require('node:assert/strict')
 const root = process.env.QIBAN_SMOKE_ROOT || path.resolve(__dirname, '..')
+const openedGuides = []
+if (process.env.QIBAN_SMOKE_SETTINGS === '1') shell.openExternal = async url => { openedGuides.push(url) }
 process.env.QIBAN_TEST_HIDDEN = '1'
 require(path.join(root, 'desktop/main.cjs'))
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -39,11 +41,12 @@ async function run() {
       const settings = await (await fetch('/api/settings')).json()
       const memories = await (await fetch('/api/memories')).json()
       return {name:boot.profile.name, provider:settings.settings.chat_provider,
-        keySaved:settings.settings.chats.anthropic.api_key_set, memories:memories.map(m=>m.text)}
+        character:boot.profile.character_id, keySaved:settings.settings.chats.anthropic.api_key_set, memories:memories.map(m=>m.text)}
     })()`)
     assert.equal(restored.name, '迁移验证伙伴')
     assert.equal(restored.provider, 'anthropic')
     assert.equal(restored.keySaved, true)
+    assert.equal(restored.character, 'natori')
     assert.ok(restored.memories.includes('迁移验证：喜欢乌龙茶'))
     console.log('MIGRATION_SMOKE_PASSED', JSON.stringify(restored))
     app.quit()
@@ -123,6 +126,12 @@ async function checkSettings(win, output) {
   try {
     await evaluate(`document.querySelector('[aria-label="设置"]').click()`)
     await until(`!!document.querySelector('[aria-label="聊天接口类型"]')`)
+    assert.equal(await evaluate(`document.querySelector('[aria-label="聊天服务地址"]').value`), 'https://api.deepseek.com')
+    assert.equal(await evaluate(`document.querySelector('[aria-label="聊天模型名称"]').value`), 'deepseek-flash')
+    assert.equal(await evaluate(`window.qibanDesktop.openGuide('file:///C:/Windows')`), false)
+    await evaluate(`document.querySelector('a[href="https://platform.deepseek.com/api_keys"]').click()`)
+    await until(`!!document.querySelector('.setup-guide')`)
+    assert.deepEqual(openedGuides, ['https://platform.deepseek.com/api_keys'])
     for (const provider of ['openai','responses','anthropic']) {
       await evaluate(`(() => { const el=document.querySelector('[aria-label="聊天接口类型"]'); el.value=${JSON.stringify(provider)}; el.dispatchEvent(new Event('change',{bubbles:true})); })()`)
       await sleep(100)
@@ -140,9 +149,28 @@ async function checkSettings(win, output) {
       assert.equal(await evaluate(`document.querySelector('[aria-label="聊天 API Key"]').type`), 'password')
     }
     assert.deepEqual(requests.map(r=>r.path), ['/v1/chat/completions','/v1/responses','/v1/messages'])
+    const voices = await evaluate(`Array.from(document.querySelector('[aria-label="配音风格"]').options).map(o=>o.value).filter(v=>v!=='custom')`)
+    assert.equal(voices.length,6)
+    for (const voice of voices) {
+      await evaluate(`(() => { const el=document.querySelector('[aria-label="配音风格"]'); el.value=${JSON.stringify(voice)}; el.dispatchEvent(new Event('change',{bubbles:true})); })()`)
+      await evaluate(`document.querySelector('.connection-actions .primary-button').click()`)
+      await until(`!document.querySelector('.connection-actions .primary-button').disabled && document.querySelector('.connection-success')?.textContent.includes('设置已保存')`)
+      assert.equal(await evaluate(`fetch('/api/settings').then(r=>r.json()).then(r=>r.settings.voice.volcengine_tts_speaker)`),voice)
+    }
     await evaluate(`document.querySelector('.settings-body').scrollTop = 0`)
     await sleep(250)
     writeFileSync(path.join(output,'desktop-settings.png'), (await win.webContents.capturePage()).toPNG())
+    await evaluate(`document.querySelector('[aria-label="人设"]').click()`)
+    for (const [name,id] of [['言川','natori'],['栖栖','hiyori'],['言川','natori']]) {
+      await evaluate(`document.querySelector('[aria-label="选择${name}"]').click()`)
+      await evaluate(`document.querySelector('.settings-body form .primary-button').click()`)
+      await until(`document.querySelector('.companion-name')?.textContent.trim() === ${JSON.stringify(name)} && !document.querySelector('.avatar-status')`)
+      assert.equal(await evaluate(`fetch('/api/bootstrap',{method:'POST'}).then(r=>r.json()).then(r=>r.profile.character_id)`),id)
+      await sleep(500)
+      writeFileSync(path.join(output,`desktop-character-${id}.png`), (await win.webContents.capturePage()).toPNG())
+    }
+    await win.webContents.reload()
+    await until(`!!document.querySelector('canvas') && !document.querySelector('.avatar-status') && document.querySelector('.companion-name')?.textContent.trim() === '言川'`)
     await evaluate(`(async () => {
       const boot=await (await fetch('/api/bootstrap',{method:'POST'})).json()
       const profile=boot.profile; profile.name='迁移验证伙伴'
@@ -150,7 +178,7 @@ async function checkSettings(win, output) {
       if (!response.ok) throw new Error('Cannot seed migration profile')
       await fetch('/api/memories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'迁移验证：喜欢乌龙茶'})})
     })()`)
-    return {providers:requests.map(r=>r.path),masked:true}
+    return {providers:requests.map(r=>r.path),masked:true,voices:voices.length,characters:['hiyori','natori'],guideLinks:openedGuides}
   } finally {
     await new Promise(resolve=>server.close(resolve))
   }

@@ -37,7 +37,7 @@ def main():
         parser.error('Build with Windows x64 Python 3.12 so native wheels match the bundled runtime.')
     if target.exists():
         parser.error('Output already exists. Use a new output folder to preserve data and prevent stale files.')
-    for required in ('dist/index.html', 'public/models/Hiyori/Hiyori.model3.json',
+    for required in ('dist/index.html', 'public/models/Hiyori/Hiyori.model3.json', 'public/models/Natori/Natori.model3.json',
                      'public/vendor/live2dcubismcore.min.js', 'node_modules/electron/dist/electron.exe'):
         if not (ROOT / required).exists():
             parser.error(f'Missing {required}; run setup and build first.')
@@ -47,13 +47,16 @@ def main():
         urllib.request.urlretrieve(PYTHON_URL, archive)
     if hashlib.sha256(archive.read_bytes()).hexdigest() != PYTHON_SHA256:
         parser.error('Python archive checksum mismatch.')
+    envelope = target
+    target = envelope / 'app'
     target.mkdir(parents=True)
+    shutil.copy2(ROOT / '启动桌面.cmd', envelope / '启动桌面.cmd')
     for name in ('backend', 'desktop', 'dist', 'public'):
         copy_tree(ROOT / name, target / name)
-    for name in ('README.md', 'LICENSE', '启动桌面.cmd'):
+    for name in ('README.md', 'LICENSE'):
         shutil.copy2(ROOT / name, target / name)
     (target / 'docs').mkdir()
-    for name in ('ASSETS.md', 'VOICE.md', 'PORTABLE.md'):
+    for name in ('ASSETS.md', 'VOICE.md', 'PORTABLE.md', 'CONNECTIONS.md', 'PRESETS.md'):
         shutil.copy2(ROOT / 'docs' / name, target / 'docs' / name)
     (target / 'scripts').mkdir()
     for name in ('windows-speech.ps1', 'start-voice.cmd'):
@@ -88,7 +91,7 @@ def main():
             for file in files:
                 shutil.copy2(file, destination / file.name)
             frontend_names.append({'name':info['name'], 'version':info['version'], 'license':info.get('license')})
-    manifest = {'version':'0.2.0', 'platform':'Windows-x64', 'python':PYTHON_VERSION,
+    manifest = {'version':'0.3.0', 'platform':'Windows-x64', 'python':PYTHON_VERSION,
                 'python_sha256':PYTHON_SHA256, 'electron':'41.0.3',
                 'python_packages': sorted([{'name':d.metadata['Name'],'version':d.version}
                     for d in importlib.metadata.distributions(path=[str(packages)])], key=lambda row:row['name']),
@@ -103,7 +106,7 @@ def main():
                     'from backend.voice_llm import CompanionLLM; from livekit.plugins import silero; '
                     'silero.VAD.load(); print("BUNDLED_IMPORTS_OK")'], cwd=target, check=True)
     total = sum(file.stat().st_size for file in target.rglob('*') if file.is_file())
-    print(json.dumps({'output':str(target),'bytes':total,'size_mib':round(total/1024**2,1)},ensure_ascii=False))
+    print(json.dumps({'output':str(envelope),'bytes':total,'size_mib':round(total/1024**2,1)},ensure_ascii=False))
 
 
 if __name__ == '__main__':
